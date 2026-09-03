@@ -66,6 +66,7 @@ def guardar_permisos(permisos):
 
 # --- GESTIÓN DE USUARIOS ---
 def cargar_usuarios():
+    usuarios = {}
     if os.path.exists(ARCHIVO_USUARIOS):
         try:
             with open(ARCHIVO_USUARIOS, "r", encoding="utf-8") as f:
@@ -73,17 +74,19 @@ def cargar_usuarios():
                 for u in usuarios:
                     if "oficina" not in usuarios[u]:
                         usuarios[u]["oficina"] = "Oficina Principal"
-                return usuarios
         except Exception:
             pass
-    # Usuarios por defecto incluyendo el usuario MASTER actualizado con clave VPRO21
-    usuarios_default = {
-        "master": {"clave": "VPRO21", "rol": "Master", "oficina": "Sede Central (Master)"},
-        "admin": {"clave": "admin123", "rol": "Administrador", "oficina": "Oficina Principal"},
-        "user1": {"clave": "user123", "rol": "Visualizador", "oficina": "Oficina Norte"}
-    }
-    guardar_usuarios(usuarios_default)
-    return usuarios_default
+            
+    # Forzar actualización/creación de usuario master con clave VPRO21
+    usuarios["master"] = {"clave": "VPRO21", "rol": "Master", "oficina": "Sede Central (Master)"}
+    
+    if "admin" not in usuarios:
+        usuarios["admin"] = {"clave": "admin123", "rol": "Administrador", "oficina": "Oficina Principal"}
+    if "user1" not in usuarios:
+        usuarios["user1"] = {"clave": "user123", "rol": "Visualizador", "oficina": "Oficina Norte"}
+        
+    guardar_usuarios(usuarios)
+    return usuarios
 
 def guardar_usuarios(usuarios):
     with open(ARCHIVO_USUARIOS, "w", encoding="utf-8") as f:
