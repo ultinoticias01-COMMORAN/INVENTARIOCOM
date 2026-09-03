@@ -202,7 +202,6 @@ opcion = st.sidebar.selectbox("Selecciona una opción", opciones_menu)
 if opcion == "📋 Consultar Inventario":
     col_t, col_m = st.columns([3, 1])
     
-    # Control estricto de visibilidad por Oficina
     if es_master or tiene_permiso("ver_todas_oficinas"):
         oficinas_filtro = ["Todas las Oficinas"] + lista_oficinas
         oficina_sel = st.sidebar.selectbox("🏬 Filtrar por Oficina:", oficinas_filtro)
@@ -241,7 +240,6 @@ if opcion == "📋 Consultar Inventario":
             reg_idx = df[df["MV"].astype(str) == mv_sel].index[0]
             registro = df.loc[reg_idx]
 
-            # Verificación de seguridad de oficina
             if not es_master and not tiene_permiso("ver_todas_oficinas") and str(registro["OFICINA"]) != st.session_state["oficina"]:
                 st.error("⚠️ No tienes permisos para modificar equipos pertenecientes a otra oficina.")
             else:
@@ -310,7 +308,6 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
             denomin = st.text_input("Denomin.")
             ubicacion = st.text_input("UBICACIÓN ACTUAL")
             
-            # Si no es master, asigna automáticamente a su oficina
             if es_master or tiene_permiso("ver_todas_oficinas"):
                 oficina_dest = st.selectbox("🏬 Oficina Asignada:", lista_oficinas)
             else:
@@ -406,7 +403,6 @@ elif opcion == "🚚 Traslados entre Oficinas" and tiene_permiso("trasladar_equi
 elif opcion == "🗑️ Eliminación Masiva / Limpieza" and tiene_permiso("eliminar_equipos"):
     st.subheader("🗑️ Opciones de Eliminación de Inventario")
     
-    # Determinar visibilidad de oficinas para borrado
     if es_master or tiene_permiso("ver_todas_oficinas"):
         oficinas_disponibles = lista_oficinas
     else:
@@ -419,7 +415,6 @@ elif opcion == "🗑️ Eliminación Masiva / Limpieza" and tiene_permiso("elimi
         "💥 Borrar Todo el Inventario"
     ])
 
-    # Tab 1: Borrar Equipos Seleccionados (Multiselección)
     with t_sel:
         st.markdown("### 🎯 Eliminar Equipos Específicos")
         oficina_sel_del = st.selectbox("Selecciona la Oficina:", oficinas_disponibles, key="del_of_sel")
@@ -443,7 +438,6 @@ elif opcion == "🗑️ Eliminación Masiva / Limpieza" and tiene_permiso("elimi
                     st.success(f"✅ Se han eliminado **{len(mvs_eliminar)} equipo(s)** de la oficina **{oficina_sel_del}**.")
                     st.rerun()
 
-    # Tab 2: Borrar Todo el Inventario de una Oficina Especifica
     with t_ofi:
         st.markdown("### 🏢 Borrar Todo el Inventario de una Oficina")
         oficina_a_vaciar = st.selectbox("Selecciona la oficina que deseas VACIAR por completo:", oficinas_disponibles, key="vac_ofi")
@@ -464,7 +458,6 @@ elif opcion == "🗑️ Eliminación Masiva / Limpieza" and tiene_permiso("elimi
                 st.success(f"✅ Se vació por completo el inventario de la oficina **{oficina_a_vaciar}**.")
                 st.rerun()
 
-    # Tab 3: Borrar TODO el Inventario del Sistema
     with t_todo:
         st.markdown("### 💥 Borrar TODO el Inventario General")
         if not (es_master or tiene_permiso("ver_todas_oficinas")):
@@ -594,31 +587,62 @@ elif opcion == "🏢 Editar Nombres de Oficinas" and tiene_permiso("renombrar_of
             st.success(f"✅ La oficina **'{oficina_origen_renombrar}'** ha sido renombrada con éxito a **'{nuevo_nombre_oficina}'**.")
             st.rerun()
 
-# 7. IMPORTAR Y EXPORTAR RESPALDOS
+# 7. IMPORTAR Y EXPORTAR RESPALDOS (RESTRINGIDO POR OFICINA)
 elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
-    st.subheader("📥 Exportar Respaldo General (Excel)")
-    if not df.empty:
+    st.subheader("📥 Exportar Respaldo (Excel)")
+    
+    # Determinar qué datos puede exportar
+    if es_master or tiene_permiso("ver_todas_oficinas"):
+        df_exportar = df.copy()
+        st.info("🌐 Tienes permisos para exportar el inventario de **todas las oficinas**.")
+    else:
+        df_exportar = df[df["OFICINA"].astype(str) == st.session_state["oficina"]]
+        st.info(f"🔒 Exportarás únicamente los equipos asignados a tu oficina: **{st.session_state['oficina']}**")
+
+    if not df_exportar.empty:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Inventario')
+            df_exportar.to_excel(writer, index=False, sheet_name='Inventario')
         st.download_button(
             label="📥 Descargar Excel de Inventario",
             data=buffer.getvalue(),
-            file_name="Inventario_General_Respaldo.xlsx",
+            file_name=f"Inventario_{st.session_state['oficina']}_Respaldo.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+    else:
+        st.warning("No hay datos para exportar.")
+
     st.divider()
     st.subheader("📤 Importar Respaldo (Excel)")
+    
+    if not (es_master or tiene_permiso("ver_todas_oficinas")):
+        st.warning(f"🔒 **Atención:** Todos los equipos que importes se asignarán de forma **estricta y automática** a tu oficina (**{st.session_state['oficina']}**). No podrás ingresar registros para otras sedes.")
+
     up_file = st.file_uploader("Cargar Excel", type=["xlsx", "xls"])
     if up_file and st.button("Procesar e Importar"):
         try:
             df_n = pd.read_excel(up_file, dtype=str).fillna("")
+            
+            # Validar y agregar columnas faltantes
             for c in COLUMNAS:
                 if c not in df_n.columns:
-                    df_n[c] = "Oficina Principal" if c == "OFICINA" else ""
-            df_final = df_n[COLUMNAS]
+                    df_n[c] = ""
+            
+            df_n = df_n[COLUMNAS]
+
+            # SI NO ES MASTER O NO TIENE VER_TODAS_OFICINAS: FORZAR SU OFICINA
+            if not (es_master or tiene_permiso("ver_todas_oficinas")):
+                df_n["OFICINA"] = st.session_state["oficina"]
+                
+                # Reemplazar únicamente los datos pertenecientes a la oficina actual en la BD general
+                df_resto = df[df["OFICINA"].astype(str) != st.session_state["oficina"]]
+                df_final = pd.concat([df_resto, df_n], ignore_index=True)
+            else:
+                # Si es Master o Administrador Global, combina los datos directamente
+                df_final = pd.concat([df, df_n], ignore_index=True).drop_duplicates(subset=["MV"], keep="last")
+
             guardar_datos(df_final)
-            st.success("✅ Datos importados correctamente.")
+            st.success(f"✅ Datos importados correctamente para **{st.session_state['oficina']}**.")
             st.rerun()
         except Exception as e:
             st.error(f"Error al importar: {e}")
