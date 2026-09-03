@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import json
 
-st.set_page_config(page_title="Gestión de Inventario", layout="wide")
+st.set_page_config(page_title="Gestión de Inventario por Oficina", layout="wide")
 
 ARCHIVO_DATOS = "inventario_equipos.xlsx"
 ARCHIVO_USUARIOS = "usuarios.json"
@@ -18,6 +18,7 @@ COLUMNAS = [
     "ESTATUS ACTUAL.",
     "Denomin.",
     "UBICACIÓN ACTUAL",
+    "OFICINA",
     "OBSERVACIONES"
 ]
 
@@ -26,13 +27,18 @@ def cargar_usuarios():
     if os.path.exists(ARCHIVO_USUARIOS):
         try:
             with open(ARCHIVO_USUARIOS, "r", encoding="utf-8") as f:
-                return json.load(f)
+                usuarios = json.load(f)
+                # Garantizar que todos tengan campo 'oficina'
+                for u in usuarios:
+                    if "oficina" not in usuarios[u]:
+                        usuarios[u]["oficina"] = "Oficina Principal"
+                return usuarios
         except Exception:
             pass
-    # Usuarios por defecto si no existe el archivo JSON
+    # Usuarios por defecto
     usuarios_default = {
-        "admin": {"clave": "admin123", "rol": "Administrador"},
-        "usuario": {"clave": "user123", "rol": "Visualizador"}
+        "admin": {"clave": "admin123", "rol": "Administrador", "oficina": "Oficina Principal"},
+        "usuario": {"clave": "user123", "rol": "Visualizador", "oficina": "Oficina Norte"}
     }
     guardar_usuarios(usuarios_default)
     return usuarios_default
@@ -48,9 +54,10 @@ if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
     st.session_state["usuario"] = ""
     st.session_state["rol"] = ""
+    st.session_state["oficina"] = ""
 
 def login():
-    st.title("🔒 Acceso al Sistema de Inventario")
+    st.title("🔒 Acceso al Sistema de Inventario Multioficina")
     with st.form("form_login"):
         user_input = st.text_input("Usuario")
         pass_input = st.text_input("Contraseña", type="password")
@@ -62,7 +69,8 @@ def login():
                 st.session_state["autenticado"] = True
                 st.session_state["usuario"] = user_input
                 st.session_state["rol"] = usuarios_actuales[user_input]["rol"]
-                st.success(f"Bienvenido {user_input} ({usuarios_actuales[user_input]['rol']})")
+                st.session_state["oficina"] = usuarios_actuales[user_input].get("oficina", "Oficina Principal")
+                st.success(f"Bienvenido {user_input} ({usuarios_actuales[user_input]['rol']}) - {st.session_state['oficina']}")
                 st.rerun()
             else:
                 st.error("⚠️ Usuario o contraseña incorrectos.")
@@ -71,6 +79,7 @@ def logout():
     st.session_state["autenticado"] = False
     st.session_state["usuario"] = ""
     st.session_state["rol"] = ""
+    st.session_state["oficina"] = ""
     st.rerun()
 
 # Si no está autenticado, muestra pantalla de login
@@ -78,9 +87,10 @@ if not st.session_state["autenticado"]:
     login()
     st.stop()
 
-# --- MOSTRAR BARRA LATERAL DE USUARIO Y ROL ---
+# --- MOSTRAR BARRA LATERAL DE USUARIO, ROL Y OFICINA ---
 st.sidebar.markdown(f"👤 **Usuario:** `{st.session_state['usuario']}`")
 st.sidebar.markdown(f"🔑 **Rol:** `{st.session_state['rol']}`")
+st.sidebar.markdown(f"🏢 **Oficina Asignada:** `{st.session_state['oficina']}`")
 if st.sidebar.button("🚪 Cerrar Sesión"):
     logout()
 st.sidebar.divider()
@@ -105,7 +115,7 @@ def guardar_datos(df):
 
 df = cargar_datos()
 
-st.title("📦 Sistema de Inventario de Equipos")
+st.title("📦 Sistema de Inventario Multioficina")
 
 # Opciones del Menú según el Rol
 es_admin = st.session_state["rol"] == "Administrador"
@@ -115,31 +125,50 @@ if es_admin:
     opciones_menu.extend([
         "➕ Registrar Nuevo Equipo",
         "💾 Importar / Exportar Respaldos",
-        "👥 Gestión de Usuarios"
+        "👥 Gestión de Usuarios y Oficinas"
     ])
 
 opcion = st.sidebar.selectbox("Selecciona una opción", opciones_menu)
 
+# Obtener lista de oficinas disponibles del sistema
+usuarios_dict = cargar_usuarios()
+lista_oficinas_registradas = sorted(list(set([u["oficina"] for u in usuarios_dict.values() if "oficina" in u] + ["Oficina Principal", "Oficina Norte", "Oficina Sur"])))
+
 # 1. BUSCAR Y GESTIONAR
 if opcion == "📋 Buscar y Gestionar Inventario":
     col_titulo, col_metrica = st.columns([3, 1])
+    
+    # Filtro por oficina según el rol
+    if es_admin:
+        oficinas_filtro = ["Todas las Oficinas"] + lista_oficinas_registradas
+        oficina_seleccionada = st.sidebar.selectbox("🏬 Filtrar Inventario por Oficina:", oficinas_filtro)
+    else:
+        oficina_seleccionada = st.session_state["oficina"]
+        st.sidebar.info(f"Visualizando únicamente inventario de: **{oficina_seleccionada}**")
+
+    # Filtrado de DataFrame por oficina
+    if oficina_seleccionada == "Todas las Oficinas":
+        df_oficina = df.copy()
+    else:
+        df_oficina = df[df["OFICINA"].astype(str) == oficina_seleccionada]
+
     with col_titulo:
-        st.subheader("📋 Consultar y Gestionar Inventario")
+        st.subheader(f"📋 Consultar Inventario ({oficina_seleccionada})")
     with col_metrica:
-        st.metric(label="📊 Total de Equipos", value=len(df))
+        st.metric(label="📊 Total de Equipos", value=len(df_oficina))
     
     busqueda = st.text_input("🔍 Buscar por MV, Material, Ubicación, Objeto técnico, etc.:")
     
-    if not df.empty:
+    if not df_oficina.empty:
         if busqueda:
-            mascara = df.apply(lambda row: row.astype(str).str.contains(busqueda, case=False).any(), axis=1)
-            df_filtrado = df[mascara]
-            st.write(f"Resultados encontrados: **{len(df_filtrado)}** de **{len(df)}**")
+            mascara = df_oficina.apply(lambda row: row.astype(str).str.contains(busqueda, case=False).any(), axis=1)
+            df_filtrado = df_oficina[mascara]
+            st.write(f"Resultados encontrados: **{len(df_filtrado)}** de **{len(df_oficina)}**")
             st.dataframe(df_filtrado, use_container_width=True)
             df_mostrar = df_filtrado
         else:
-            st.dataframe(df, use_container_width=True)
-            df_mostrar = df
+            st.dataframe(df_oficina, use_container_width=True)
+            df_mostrar = df_oficina
 
         if not df_mostrar.empty:
             st.divider()
@@ -152,7 +181,7 @@ if opcion == "📋 Buscar y Gestionar Inventario":
             registro = df.loc[registro_idx]
             
             if es_admin:
-                tab_editar, tab_eliminar = st.tabs(["✏️ Editar Registro", "🗑️ Eliminar Registro"])
+                tab_editar, tab_eliminar = st.tabs(["✏️ Editar Registro / Reubicar Oficina", "🗑️ Eliminar Registro"])
                 
                 with tab_editar:
                     with st.form("form_editar_directo"):
@@ -167,6 +196,12 @@ if opcion == "📋 Buscar y Gestionar Inventario":
                             estatus_actual_edit = st.text_input("ESTATUS ACTUAL.", value=str(registro["ESTATUS ACTUAL."]))
                             denomin_edit = st.text_input("Denomin.", value=str(registro["Denomin."]))
                             ubicacion_edit = st.text_input("UBICACIÓN ACTUAL", value=str(registro["UBICACIÓN ACTUAL"]))
+                            
+                            # Selección de oficina
+                            oficina_actual_reg = str(registro["OFICINA"]) if registro["OFICINA"] else st.session_state["oficina"]
+                            idx_of = lista_oficinas_registradas.index(oficina_actual_reg) if oficina_actual_reg in lista_oficinas_registradas else 0
+                            oficina_edit = st.selectbox("🏬 OFICINA PERTENECE", lista_oficinas_registradas, index=idx_of)
+                            
                             observaciones_edit = st.text_area("OBSERVACIONES", value=str(registro["OBSERVACIONES"]))
                             
                         actualizar = st.form_submit_button("💾 Guardar Cambios")
@@ -181,6 +216,7 @@ if opcion == "📋 Buscar y Gestionar Inventario":
                             df.loc[registro_idx, "ESTATUS ACTUAL."] = str(estatus_actual_edit)
                             df.loc[registro_idx, "Denomin."] = str(denomin_edit)
                             df.loc[registro_idx, "UBICACIÓN ACTUAL"] = str(ubicacion_edit)
+                            df.loc[registro_idx, "OFICINA"] = str(oficina_edit)
                             df.loc[registro_idx, "OBSERVACIONES"] = str(observaciones_edit)
                             
                             guardar_datos(df)
@@ -195,11 +231,11 @@ if opcion == "📋 Buscar y Gestionar Inventario":
                         st.success(f"✅ El equipo {mv_seleccionado} ha sido eliminado.")
                         st.rerun()
             else:
-                st.info("🔒 Estás en modo 'Visualizador'. Si necesitas editar o borrar registros, solicita acceso de Administrador.")
+                st.info("🔒 Estás en modo 'Visualizador'. Para modificar equipos o cambiar su oficina consulta con un Administrador.")
     else:
-        st.info("El inventario está vacío actualmente.")
+        st.info(f"El inventario de {oficina_seleccionada} está vacío actualmente.")
 
-# 2. REGISTRAR
+# 2. REGISTRAR NUEVO EQUIPO
 elif opcion == "➕ Registrar Nuevo Equipo" and es_admin:
     st.subheader("➕ Registrar Nuevo Equipo")
     
@@ -215,6 +251,7 @@ elif opcion == "➕ Registrar Nuevo Equipo" and es_admin:
             estatus_actual = st.selectbox("ESTATUS ACTUAL.", ["Bueno", "Regular", "Malo", "En revisión", "De baja", "Otro"])
             denomin = st.text_input("Denomin.")
             ubicacion = st.text_input("UBICACIÓN ACTUAL")
+            oficina_destino = st.selectbox("🏬 Oficina a la que pertenece:", lista_oficinas_registradas)
             observaciones = st.text_area("OBSERVACIONES")
             
         guardado = st.form_submit_button("Guardar Equipo")
@@ -234,17 +271,17 @@ elif opcion == "➕ Registrar Nuevo Equipo" and es_admin:
                     "ESTATUS ACTUAL.": str(estatus_actual),
                     "Denomin.": str(denomin),
                     "UBICACIÓN ACTUAL": str(ubicacion),
+                    "OFICINA": str(oficina_destino),
                     "OBSERVACIONES": str(observaciones)
                 }])
                 df = pd.concat([df, nuevo_registro], ignore_index=True)
                 guardar_datos(df)
-                st.success("✅ Equipo registrado con éxito.")
+                st.success(f"✅ Equipo registrado con éxito en **{oficina_destino}**.")
                 st.rerun()
 
-# 3. IMPORTAR / EXPORTAR
+# 3. IMPORTAR / EXPORTAR RESPALDOS
 elif opcion == "💾 Importar / Exportar Respaldos" and es_admin:
     st.subheader("📥 Exportar Respaldo (Excel)")
-    st.write("Descarga una copia completa de la base de datos en formato Excel (.xlsx).")
     
     if not df.empty:
         import io
@@ -253,9 +290,9 @@ elif opcion == "💾 Importar / Exportar Respaldos" and es_admin:
             df.to_excel(writer, index=False, sheet_name='Inventario')
         
         st.download_button(
-            label="📥 Descargar Excel de Inventario",
+            label="📥 Descargar Excel General de Inventario",
             data=buffer.getvalue(),
-            file_name="Inventario_Respaldo.xlsx",
+            file_name="Inventario_General_Multioficina.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
@@ -264,8 +301,6 @@ elif opcion == "💾 Importar / Exportar Respaldos" and es_admin:
     st.divider()
     
     st.subheader("📤 Importar Datos desde Excel")
-    st.write("Carga tu archivo Excel para actualizar o restaurar los datos.")
-    
     archivo_subido = st.file_uploader("Cargar archivo Excel (.xlsx)", type=["xlsx", "xls"])
     modo_importacion = st.radio("Modo de importación:", ["Reemplazar todo el inventario", "Anexar nuevos registros sin borrar los existentes"])
     
@@ -276,7 +311,7 @@ elif opcion == "💾 Importar / Exportar Respaldos" and es_admin:
                 
                 for col in COLUMNAS:
                     if col not in df_nuevo.columns:
-                        df_nuevo[col] = ""
+                        df_nuevo[col] = "Oficina Principal" if col == "OFICINA" else ""
                 df_nuevo = df_nuevo[COLUMNAS]
                 
                 if modo_importacion == "Reemplazar todo el inventario":
@@ -290,83 +325,93 @@ elif opcion == "💾 Importar / Exportar Respaldos" and es_admin:
             except Exception as e:
                 st.error(f"Error al leer el archivo Excel: {e}")
 
-# 4. GESTIÓN DE USUARIOS (CREAR, EDITAR Y ELIMINAR CUALQUIER USUARIO, INCLUYENDO ADMIN)
-elif opcion == "👥 Gestión de Usuarios" and es_admin:
-    st.subheader("👥 Administración de Usuarios del Sistema")
+# 4. GESTIÓN DE USUARIOS Y OFICINAS
+elif opcion == "👥 Gestión de Usuarios y Oficinas" and es_admin:
+    st.subheader("👥 Administración de Usuarios y Asignación de Oficinas")
     
     usuarios_dict = cargar_usuarios()
     
-    st.write("### 📋 Usuarios Registrados")
+    st.write("### 📋 Usuarios Registrados y sus Oficinas")
     df_usuarios = pd.DataFrame([
-        {"Usuario": u, "Rol": datos["rol"]} for u, datos in usuarios_dict.items()
+        {"Usuario": u, "Rol": datos["rol"], "Oficina Asignada": datos.get("oficina", "Oficina Principal")}
+        for u, datos in usuarios_dict.items()
     ])
     st.dataframe(df_usuarios, use_container_width=True)
     
     st.divider()
     
-    tab_crear, tab_editar_u, tab_eliminar_u = st.tabs(["➕ Crear Usuario", "✏️ Editar Usuario", "🗑️ Eliminar Usuario"])
+    tab_crear, tab_editar_u, tab_eliminar_u = st.tabs(["➕ Crear Usuario", "✏️ Editar Usuario y Oficina", "🗑️ Eliminar Usuario"])
     
-    # PESTAÑA: CREAR USUARIO
+    # CREAR USUARIO
     with tab_crear:
         with st.form("form_nuevo_usuario"):
             nuevo_user = st.text_input("Nombre de Usuario").strip()
             nueva_clave = st.text_input("Contraseña", type="password")
             nuevo_rol = st.selectbox("Rol del Usuario", ["Visualizador", "Administrador"])
+            
+            # Campo para especificar u ofrecer oficinas
+            nueva_oficina_input = st.text_input("🏬 Nombre de la Oficina (Ej: Oficina Principal, Sucursal Norte, Depósito Central):", value="Oficina Principal").strip()
+            
             btn_crear_user = st.form_submit_button("➕ Crear Usuario")
             
             if btn_crear_user:
-                if not nuevo_user or not nueva_clave:
-                    st.error("⚠️ Debes completar tanto el usuario como la contraseña.")
+                if not nuevo_user or not nueva_clave or not nueva_oficina_input:
+                    st.error("⚠️ Debes completar todos los campos obligatorios.")
                 elif nuevo_user in usuarios_dict:
                     st.error(f"⚠️ El usuario '{nuevo_user}' ya existe.")
                 else:
-                    usuarios_dict[nuevo_user] = {"clave": nueva_clave, "rol": nuevo_rol}
+                    usuarios_dict[nuevo_user] = {
+                        "clave": nueva_clave,
+                        "rol": nuevo_rol,
+                        "oficina": nueva_oficina_input
+                    }
                     guardar_usuarios(usuarios_dict)
-                    st.success(f"✅ Usuario '{nuevo_user}' creado exitosamente.")
+                    st.success(f"✅ Usuario '{nuevo_user}' creado exitosamente en **{nueva_oficina_input}**.")
                     st.rerun()
 
-    # PESTAÑA: EDITAR USUARIO (INCLUYENDO ADMIN O CUALQUIER OTRO)
+    # EDITAR USUARIO (INCLUYENDO ADMIN)
     with tab_editar_u:
         usuario_a_editar = st.selectbox("Selecciona el usuario que deseas modificar:", list(usuarios_dict.keys()), key="select_edit_user")
         datos_actuales = usuarios_dict[usuario_a_editar]
         
         with st.form("form_editar_usuario"):
             nuevo_nombre_user = st.text_input("Nuevo Nombre de Usuario", value=usuario_a_editar).strip()
-            nueva_clave_user = st.text_input("Nueva Contraseña (dejar la actual o escribir una nueva)", value=datos_actuales["clave"])
+            nueva_clave_user = st.text_input("Nueva Contraseña", value=datos_actuales["clave"])
             
-            # Determinar índice para el selectbox de rol
             roles = ["Administrador", "Visualizador"]
             idx_rol = roles.index(datos_actuales["rol"]) if datos_actuales["rol"] in roles else 0
             nuevo_rol_user = st.selectbox("Rol del Usuario", roles, index=idx_rol)
             
-            btn_actualizar_user = st.form_submit_button("💾 Guardar Cambios del Usuario")
+            nueva_oficina_edit = st.text_input("🏬 Oficina Asignada (puedes escribir una nueva oficina o conservar la actual):", value=datos_actuales.get("oficina", "Oficina Principal")).strip()
+            
+            btn_actualizar_user = st.form_submit_button("💾 Guardar Cambios")
             
             if btn_actualizar_user:
-                if not nuevo_nombre_user or not nueva_clave_user:
-                    st.error("⚠️ El nombre de usuario y la contraseña no pueden estar vacíos.")
+                if not nuevo_nombre_user or not nueva_clave_user or not nueva_oficina_edit:
+                    st.error("⚠️ Ningún campo puede quedar vacío.")
                 elif nuevo_nombre_user != usuario_a_editar and nuevo_nombre_user in usuarios_dict:
                     st.error(f"⚠️ El usuario '{nuevo_nombre_user}' ya existe.")
                 else:
-                    # Eliminar la clave antigua si cambió el nombre de usuario
                     if nuevo_nombre_user != usuario_a_editar:
                         del usuarios_dict[usuario_a_editar]
                         
-                    # Asignar nuevos datos
                     usuarios_dict[nuevo_nombre_user] = {
                         "clave": nueva_clave_user,
-                        "rol": nuevo_rol_user
+                        "rol": nuevo_rol_user,
+                        "oficina": nueva_oficina_edit
                     }
                     guardar_usuarios(usuarios_dict)
                     
-                    # Si el usuario actual editó su propia cuenta, actualizar la sesión
+                    # Actualizar la sesión actual si editaste tu propio usuario
                     if st.session_state["usuario"] == usuario_a_editar:
                         st.session_state["usuario"] = nuevo_nombre_user
                         st.session_state["rol"] = nuevo_rol_user
+                        st.session_state["oficina"] = nueva_oficina_edit
                     
-                    st.success(f"✅ Usuario '{nuevo_nombre_user}' actualizado correctamente.")
+                    st.success(f"✅ Usuario '{nuevo_nombre_user}' y su oficina asignada se actualizaron correctamente.")
                     st.rerun()
 
-    # PESTAÑA: ELIMINAR USUARIO
+    # ELIMINAR USUARIO
     with tab_eliminar_u:
         usuario_a_borrar = st.selectbox("Selecciona un usuario a eliminar:", list(usuarios_dict.keys()), key="select_del_user")
         
