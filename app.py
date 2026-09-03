@@ -10,6 +10,7 @@ st.set_page_config(page_title="Sistema de Inventario - Master Multioficina", lay
 ARCHIVO_DATOS = "inventario_equipos.xlsx"
 ARCHIVO_USUARIOS = "usuarios.json"
 ARCHIVO_PERMISOS = "permisos.json"
+ARCHIVO_OFICINAS = "oficinas.json"
 ARCHIVO_HISTORIAL_TRASLADOS = "historial_traslados.xlsx"
 
 # Columnas estándar del inventario
@@ -64,6 +65,22 @@ def guardar_permisos(permisos):
     with open(ARCHIVO_PERMISOS, "w", encoding="utf-8") as f:
         json.dump(permisos, f, ensure_ascii=False, indent=4)
 
+# --- GESTIÓN DE OFICINAS PERSISTENTES ---
+def cargar_oficinas_guardadas():
+    if os.path.exists(ARCHIVO_OFICINAS):
+        try:
+            with open(ARCHIVO_OFICINAS, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    oficinas_iniciales = ["Oficina Principal", "Oficina Norte"]
+    guardar_oficinas(oficinas_iniciales)
+    return oficinas_iniciales
+
+def guardar_oficinas(lista_oficinas):
+    with open(ARCHIVO_OFICINAS, "w", encoding="utf-8") as f:
+        json.dump(lista_oficinas, f, ensure_ascii=False, indent=4)
+
 # --- GESTIÓN DE USUARIOS ---
 def cargar_usuarios():
     usuarios = {}
@@ -77,7 +94,6 @@ def cargar_usuarios():
         except Exception:
             pass
             
-    # Forzar actualización/creación de usuario master con clave VPRO21
     usuarios["master"] = {"clave": "VPRO21", "rol": "Master", "oficina": "Sede Central (Master)"}
     
     if "admin" not in usuarios:
@@ -92,7 +108,7 @@ def guardar_usuarios(usuarios):
     with open(ARCHIVO_USUARIOS, "w", encoding="utf-8") as f:
         json.dump(usuarios, f, ensure_ascii=False, indent=4)
 
-# --- INICIALIZAR PERMISOS Y USUARIOS ---
+# --- INICIALIZAR DATOS BASE ---
 USUARIOS = cargar_usuarios()
 PERMISOS = cargar_permisos()
 
@@ -133,7 +149,6 @@ if not st.session_state["autenticado"]:
     login()
     st.stop()
 
-# --- VERIFICACIÓN DE PERMISOS DINÁMICOS ---
 rol_actual = st.session_state["rol"]
 es_master = (rol_actual == "Master")
 
@@ -171,11 +186,13 @@ def guardar_datos(df):
 
 df = cargar_datos()
 
-# Lista de oficinas registradas
+# CONSOLIDACIÓN DINÁMICA DE TODAS LAS OFICINAS
+oficinas_persistencia = cargar_oficinas_guardadas()
 usuarios_dict = cargar_usuarios()
 oficinas_usuarios = [u["oficina"] for u in usuarios_dict.values() if "oficina" in u]
 oficinas_equipos = df["OFICINA"].unique().tolist() if not df.empty else []
-lista_oficinas = sorted(list(set(oficinas_usuarios + oficinas_equipos + ["Oficina Principal"])))
+
+lista_oficinas = sorted(list(set(oficinas_persistencia + oficinas_usuarios + oficinas_equipos + ["Oficina Principal"])))
 
 st.title("📦 Gestión de Inventario Multioficina")
 
@@ -190,7 +207,7 @@ if tiene_permiso("eliminar_equipos"):
 if tiene_permiso("gestion_usuarios"):
     opciones_menu.append("👥 Gestión de Usuarios")
 if tiene_permiso("renombrar_oficinas"):
-    opciones_menu.append("🏢 Editar Nombres de Oficinas")
+    opciones_menu.append("🏢 Gestión de Oficinas")
 if tiene_permiso("exportar_importar"):
     opciones_menu.append("💾 Respaldos (Excel)")
 if es_master:
@@ -558,40 +575,68 @@ elif opcion == "👥 Gestión de Usuarios" and tiene_permiso("gestion_usuarios")
                 st.success(f"✅ Usuario '{u_del}' eliminado.")
                 st.rerun()
 
-# 6. EDITAR NOMBRES DE LAS OFICINAS
-elif opcion == "🏢 Editar Nombres de Oficinas" and tiene_permiso("renombrar_oficinas"):
-    st.subheader("🏢 Edición y Renombrado de Oficinas")
-    st.write("Cambia el nombre de una oficina. Se actualizarán automáticamente los usuarios y los equipos asociados.")
+# 6. GESTIÓN Y CREACIÓN DE OFICINAS
+elif opcion == "🏢 Gestión de Oficinas" and tiene_permiso("renombrar_oficinas"):
+    st.subheader("🏢 Gestión de Oficinas")
     
-    oficina_origen_renombrar = st.selectbox("Selecciona la oficina a renombrar:", lista_oficinas)
-    nuevo_nombre_oficina = st.text_input("Escribe el nuevo nombre de la oficina:").strip()
+    t_crear_of, t_renombrar_of = st.tabs(["➕ Crear Nueva Oficina", "✏️ Renombrar Oficina Existente"])
     
-    if st.button("💾 Renombrar Oficina"):
-        if not nuevo_nombre_oficina:
-            st.error("⚠️ El nuevo nombre no puede estar vacío.")
-        elif nuevo_nombre_oficina in lista_oficinas:
-            st.error("⚠️ Ya existe una oficina con ese nombre.")
-        else:
-            for u in usuarios_dict:
-                if usuarios_dict[u].get("oficina") == oficina_origen_renombrar:
-                    usuarios_dict[u]["oficina"] = nuevo_nombre_oficina
-            guardar_usuarios(usuarios_dict)
-            
-            if not df.empty:
-                df.loc[df["OFICINA"] == oficina_origen_renombrar, "OFICINA"] = nuevo_nombre_oficina
-                guardar_datos(df)
-                
-            if st.session_state["oficina"] == oficina_origen_renombrar:
-                st.session_state["oficina"] = nuevo_nombre_oficina
-                
-            st.success(f"✅ La oficina **'{oficina_origen_renombrar}'** ha sido renombrada con éxito a **'{nuevo_nombre_oficina}'**.")
-            st.rerun()
+    with t_crear_of:
+        st.markdown("### ➕ Registrar Nueva Oficina")
+        nueva_oficina_nombre = st.text_input("Nombre de la nueva oficina:").strip()
+        
+        if st.button("💾 Crear Oficina"):
+            if not nueva_oficina_nombre:
+                st.error("⚠️ Debes escribir un nombre para la oficina.")
+            elif nueva_oficina_nombre in lista_oficinas:
+                st.error("⚠️ La oficina especificada ya existe en el sistema.")
+            else:
+                oficinas_guardadas = cargar_oficinas_guardadas()
+                if nueva_oficina_nombre not in oficinas_guardadas:
+                    oficinas_guardadas.append(nueva_oficina_nombre)
+                    guardar_oficinas(oficinas_guardadas)
+                st.success(f"✅ La oficina **'{nueva_oficina_nombre}'** ha sido registrada exitosamente.")
+                st.rerun()
 
-# 7. IMPORTAR Y EXPORTAR RESPALDOS (RESTRINGIDO POR OFICINA)
+    with t_renombrar_of:
+        st.markdown("### ✏️ Editar Nombre de Oficina")
+        oficina_origen_renombrar = st.selectbox("Selecciona la oficina a renombrar:", lista_oficinas)
+        nuevo_nombre_oficina = st.text_input("Escribe el nuevo nombre de la oficina:").strip()
+        
+        if st.button("💾 Renombrar Oficina"):
+            if not nuevo_nombre_oficina:
+                st.error("⚠️ El nuevo nombre no puede estar vacío.")
+            elif nuevo_nombre_oficina in lista_oficinas:
+                st.error("⚠️ Ya existe una oficina con ese nombre.")
+            else:
+                # Actualizar persistencia de lista de oficinas
+                oficinas_guardadas = cargar_oficinas_guardadas()
+                if oficina_origen_renombrar in oficinas_guardadas:
+                    oficinas_guardadas.remove(oficina_origen_renombrar)
+                oficinas_guardadas.append(nuevo_nombre_oficina)
+                guardar_oficinas(oficinas_guardadas)
+
+                # Actualizar usuarios asignados
+                for u in usuarios_dict:
+                    if usuarios_dict[u].get("oficina") == oficina_origen_renombrar:
+                        usuarios_dict[u]["oficina"] = nuevo_nombre_oficina
+                guardar_usuarios(usuarios_dict)
+                
+                # Actualizar equipos asignados
+                if not df.empty:
+                    df.loc[df["OFICINA"] == oficina_origen_renombrar, "OFICINA"] = nuevo_nombre_oficina
+                    guardar_datos(df)
+                    
+                if st.session_state["oficina"] == oficina_origen_renombrar:
+                    st.session_state["oficina"] = nuevo_nombre_oficina
+                    
+                st.success(f"✅ La oficina **'{oficina_origen_renombrar}'** ha sido renombrada con éxito a **'{nuevo_nombre_oficina}'**.")
+                st.rerun()
+
+# 7. IMPORTAR Y EXPORTAR RESPALDOS
 elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
     st.subheader("📥 Exportar Respaldo (Excel)")
     
-    # Determinar qué datos puede exportar
     if es_master or tiene_permiso("ver_todas_oficinas"):
         df_exportar = df.copy()
         st.info("🌐 Tienes permisos para exportar el inventario de **todas las oficinas**.")
@@ -623,22 +668,18 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
         try:
             df_n = pd.read_excel(up_file, dtype=str).fillna("")
             
-            # Validar y agregar columnas faltantes
             for c in COLUMNAS:
                 if c not in df_n.columns:
                     df_n[c] = ""
             
             df_n = df_n[COLUMNAS]
 
-            # SI NO ES MASTER O NO TIENE VER_TODAS_OFICINAS: FORZAR SU OFICINA
             if not (es_master or tiene_permiso("ver_todas_oficinas")):
                 df_n["OFICINA"] = st.session_state["oficina"]
                 
-                # Reemplazar únicamente los datos pertenecientes a la oficina actual en la BD general
                 df_resto = df[df["OFICINA"].astype(str) != st.session_state["oficina"]]
                 df_final = pd.concat([df_resto, df_n], ignore_index=True)
             else:
-                # Si es Master o Administrador Global, combina los datos directamente
                 df_final = pd.concat([df, df_n], ignore_index=True).drop_duplicates(subset=["MV"], keep="last")
 
             guardar_datos(df_final)
@@ -664,7 +705,7 @@ elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
             p_adm_eliminar = st.checkbox("Eliminar Equipos", value=permisos_config["Administrador"].get("eliminar_equipos", True))
             p_adm_traslado = st.checkbox("Trasladar Equipos entre Oficinas", value=permisos_config["Administrador"].get("trasladar_equipos", True))
             p_adm_users = st.checkbox("Gestionar Usuarios", value=permisos_config["Administrador"].get("gestion_usuarios", True))
-            p_adm_renombrar = st.checkbox("Renombrar Oficinas", value=permisos_config["Administrador"].get("renombrar_oficinas", True))
+            p_adm_renombrar = st.checkbox("Renombrar / Crear Oficinas", value=permisos_config["Administrador"].get("renombrar_oficinas", True))
             p_adm_respaldos = st.checkbox("Exportar e Importar Respaldos", value=permisos_config["Administrador"].get("exportar_importar", True))
             p_adm_ver_todo = st.checkbox("Ver Inventario de TODAS las Oficinas", value=permisos_config["Administrador"].get("ver_todas_oficinas", False))
             
@@ -675,7 +716,7 @@ elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
             p_vis_eliminar = st.checkbox("Eliminar Equipos ", value=permisos_config["Visualizador"].get("eliminar_equipos", False))
             p_vis_traslado = st.checkbox("Trasladar Equipos ", value=permisos_config["Visualizador"].get("trasladar_equipos", False))
             p_vis_users = st.checkbox("Gestionar Usuarios ", value=permisos_config["Visualizador"].get("gestion_usuarios", False))
-            p_vis_renombrar = st.checkbox("Renombrar Oficinas ", value=permisos_config["Visualizador"].get("renombrar_oficinas", False))
+            p_vis_renombrar = st.checkbox("Renombrar / Crear Oficinas ", value=permisos_config["Visualizador"].get("renombrar_oficinas", False))
             p_vis_respaldos = st.checkbox("Exportar e Importar Respaldos ", value=permisos_config["Visualizador"].get("exportar_importar", False))
             p_vis_ver_todo = st.checkbox("Ver Inventario de TODAS las Oficinas ", value=permisos_config["Visualizador"].get("ver_todas_oficinas", False))
 
