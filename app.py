@@ -120,9 +120,8 @@ if es_admin:
 
 opcion = st.sidebar.selectbox("Selecciona una opción", opciones_menu)
 
-# 1. BUSCAR Y GESTIONAR (VER, EDITAR Y ELIMINAR DIRECTAMENTE)
+# 1. BUSCAR Y GESTIONAR
 if opcion == "📋 Buscar y Gestionar Inventario":
-    # Encabezado con métrica del total de equipos
     col_titulo, col_metrica = st.columns([3, 1])
     with col_titulo:
         st.subheader("📋 Consultar y Gestionar Inventario")
@@ -142,7 +141,6 @@ if opcion == "📋 Buscar y Gestionar Inventario":
             st.dataframe(df, use_container_width=True)
             df_mostrar = df
 
-        # Acciones sobre los resultados de la búsqueda
         if not df_mostrar.empty:
             st.divider()
             st.subheader("⚡ Acciones Rápidas sobre Registro Seleccionado")
@@ -150,14 +148,12 @@ if opcion == "📋 Buscar y Gestionar Inventario":
             lista_mvs = df_mostrar["MV"].astype(str).unique().tolist()
             mv_seleccionado = st.selectbox("Selecciona el código MV para gestionar:", lista_mvs)
             
-            # Obtener datos del registro seleccionado
             registro_idx = df[df["MV"].astype(str) == mv_seleccionado].index[0]
             registro = df.loc[registro_idx]
             
             if es_admin:
                 tab_editar, tab_eliminar = st.tabs(["✏️ Editar Registro", "🗑️ Eliminar Registro"])
                 
-                # TAB EDITAR DIRECTO
                 with tab_editar:
                     with st.form("form_editar_directo"):
                         col1, col2 = st.columns(2)
@@ -191,7 +187,6 @@ if opcion == "📋 Buscar y Gestionar Inventario":
                             st.success("✅ Registro actualizado con éxito.")
                             st.rerun()
 
-                # TAB ELIMINAR DIRECTO
                 with tab_eliminar:
                     st.warning(f"⚠️ ¿Estás seguro de que deseas borrar permanentemente el equipo con MV: **{mv_seleccionado}**?")
                     if st.button("❌ Confirmar Eliminación"):
@@ -204,7 +199,7 @@ if opcion == "📋 Buscar y Gestionar Inventario":
     else:
         st.info("El inventario está vacío actualmente.")
 
-# 2. REGISTRAR (SOLO ADMIN)
+# 2. REGISTRAR
 elif opcion == "➕ Registrar Nuevo Equipo" and es_admin:
     st.subheader("➕ Registrar Nuevo Equipo")
     
@@ -246,7 +241,7 @@ elif opcion == "➕ Registrar Nuevo Equipo" and es_admin:
                 st.success("✅ Equipo registrado con éxito.")
                 st.rerun()
 
-# 3. IMPORTAR / EXPORTAR (SOLO ADMIN)
+# 3. IMPORTAR / EXPORTAR
 elif opcion == "💾 Importar / Exportar Respaldos" and es_admin:
     st.subheader("📥 Exportar Respaldo (Excel)")
     st.write("Descarga una copia completa de la base de datos en formato Excel (.xlsx).")
@@ -295,41 +290,29 @@ elif opcion == "💾 Importar / Exportar Respaldos" and es_admin:
             except Exception as e:
                 st.error(f"Error al leer el archivo Excel: {e}")
 
-# 4. GESTIÓN DE USUARIOS (SOLO ADMIN)
+# 4. GESTIÓN DE USUARIOS (CREAR, EDITAR Y ELIMINAR CUALQUIER USUARIO, INCLUYENDO ADMIN)
 elif opcion == "👥 Gestión de Usuarios" and es_admin:
     st.subheader("👥 Administración de Usuarios del Sistema")
     
     usuarios_dict = cargar_usuarios()
     
-    col_lista, col_crear = st.columns([1, 1])
+    st.write("### 📋 Usuarios Registrados")
+    df_usuarios = pd.DataFrame([
+        {"Usuario": u, "Rol": datos["rol"]} for u, datos in usuarios_dict.items()
+    ])
+    st.dataframe(df_usuarios, use_container_width=True)
     
-    with col_lista:
-        st.write("### 📋 Usuarios Existentes")
-        df_usuarios = pd.DataFrame([
-            {"Usuario": u, "Rol": datos["rol"]} for u, datos in usuarios_dict.items()
-        ])
-        st.dataframe(df_usuarios, use_container_width=True)
-        
-        st.write("### 🗑️ Eliminar Usuario")
-        usuario_a_borrar = st.selectbox("Selecciona un usuario a eliminar:", list(usuarios_dict.keys()))
-        if st.button("Eliminar Usuario Seleccionado"):
-            if usuario_a_borrar == st.session_state["usuario"]:
-                st.error("⚠️ No puedes eliminar el usuario con el que tienes sesión iniciada.")
-            elif usuario_a_borrar == "admin":
-                st.error("⚠️ El usuario 'admin' principal no se puede eliminar.")
-            else:
-                del usuarios_dict[usuario_a_borrar]
-                guardar_usuarios(usuarios_dict)
-                st.success(f"✅ Usuario '{usuario_a_borrar}' eliminado.")
-                st.rerun()
-
-    with col_crear:
-        st.write("### ➕ Crear Nuevo Usuario")
+    st.divider()
+    
+    tab_crear, tab_editar_u, tab_eliminar_u = st.tabs(["➕ Crear Usuario", "✏️ Editar Usuario", "🗑️ Eliminar Usuario"])
+    
+    # PESTAÑA: CREAR USUARIO
+    with tab_crear:
         with st.form("form_nuevo_usuario"):
             nuevo_user = st.text_input("Nombre de Usuario").strip()
             nueva_clave = st.text_input("Contraseña", type="password")
             nuevo_rol = st.selectbox("Rol del Usuario", ["Visualizador", "Administrador"])
-            btn_crear_user = st.form_submit_button("Crear Usuario")
+            btn_crear_user = st.form_submit_button("➕ Crear Usuario")
             
             if btn_crear_user:
                 if not nuevo_user or not nueva_clave:
@@ -339,5 +322,61 @@ elif opcion == "👥 Gestión de Usuarios" and es_admin:
                 else:
                     usuarios_dict[nuevo_user] = {"clave": nueva_clave, "rol": nuevo_rol}
                     guardar_usuarios(usuarios_dict)
-                    st.success(f"✅ Usuario '{nuevo_user}' creado exitosamente con el rol '{nuevo_rol}'.")
+                    st.success(f"✅ Usuario '{nuevo_user}' creado exitosamente.")
                     st.rerun()
+
+    # PESTAÑA: EDITAR USUARIO (INCLUYENDO ADMIN O CUALQUIER OTRO)
+    with tab_editar_u:
+        usuario_a_editar = st.selectbox("Selecciona el usuario que deseas modificar:", list(usuarios_dict.keys()), key="select_edit_user")
+        datos_actuales = usuarios_dict[usuario_a_editar]
+        
+        with st.form("form_editar_usuario"):
+            nuevo_nombre_user = st.text_input("Nuevo Nombre de Usuario", value=usuario_a_editar).strip()
+            nueva_clave_user = st.text_input("Nueva Contraseña (dejar la actual o escribir una nueva)", value=datos_actuales["clave"])
+            
+            # Determinar índice para el selectbox de rol
+            roles = ["Administrador", "Visualizador"]
+            idx_rol = roles.index(datos_actuales["rol"]) if datos_actuales["rol"] in roles else 0
+            nuevo_rol_user = st.selectbox("Rol del Usuario", roles, index=idx_rol)
+            
+            btn_actualizar_user = st.form_submit_button("💾 Guardar Cambios del Usuario")
+            
+            if btn_actualizar_user:
+                if not nuevo_nombre_user or not nueva_clave_user:
+                    st.error("⚠️ El nombre de usuario y la contraseña no pueden estar vacíos.")
+                elif nuevo_nombre_user != usuario_a_editar and nuevo_nombre_user in usuarios_dict:
+                    st.error(f"⚠️ El usuario '{nuevo_nombre_user}' ya existe.")
+                else:
+                    # Eliminar la clave antigua si cambió el nombre de usuario
+                    if nuevo_nombre_user != usuario_a_editar:
+                        del usuarios_dict[usuario_a_editar]
+                        
+                    # Asignar nuevos datos
+                    usuarios_dict[nuevo_nombre_user] = {
+                        "clave": nueva_clave_user,
+                        "rol": nuevo_rol_user
+                    }
+                    guardar_usuarios(usuarios_dict)
+                    
+                    # Si el usuario actual editó su propia cuenta, actualizar la sesión
+                    if st.session_state["usuario"] == usuario_a_editar:
+                        st.session_state["usuario"] = nuevo_nombre_user
+                        st.session_state["rol"] = nuevo_rol_user
+                    
+                    st.success(f"✅ Usuario '{nuevo_nombre_user}' actualizado correctamente.")
+                    st.rerun()
+
+    # PESTAÑA: ELIMINAR USUARIO
+    with tab_eliminar_u:
+        usuario_a_borrar = st.selectbox("Selecciona un usuario a eliminar:", list(usuarios_dict.keys()), key="select_del_user")
+        
+        if st.button("❌ Eliminar Usuario Seleccionado"):
+            if usuario_a_borrar == st.session_state["usuario"]:
+                st.error("⚠️ No puedes eliminar el usuario con el que tienes sesión iniciada actualmente.")
+            elif len(usuarios_dict) <= 1:
+                st.error("⚠️ Debe existir al menos un usuario en el sistema.")
+            else:
+                del usuarios_dict[usuario_a_borrar]
+                guardar_usuarios(usuarios_dict)
+                st.success(f"✅ Usuario '{usuario_a_borrar}' eliminado.")
+                st.rerun()
