@@ -2,13 +2,17 @@ import streamlit as st
 import pandas as pd
 import os
 import json
+from datetime import datetime
+import io
 
-st.set_page_config(page_title="Gestión de Inventario por Oficina", layout="wide")
+st.set_page_config(page_title="Sistema de Inventario - Master Multioficina", layout="wide")
 
 ARCHIVO_DATOS = "inventario_equipos.xlsx"
 ARCHIVO_USUARIOS = "usuarios.json"
+ARCHIVO_PERMISOS = "permisos.json"
+ARCHIVO_HISTORIAL_TRASLADOS = "historial_traslados.xlsx"
 
-# Columnas del sistema
+# Columnas estándar del inventario
 COLUMNAS = [
     "MV",
     "Material",
@@ -22,23 +26,61 @@ COLUMNAS = [
     "OBSERVACIONES"
 ]
 
-# --- FUNCIONES DE GESTIÓN DE USUARIOS ---
+# --- PERMISOS POR DEFECTO ---
+PERMISOS_DEFAULT = {
+    "Administrador": {
+        "crear_equipos": True,
+        "editar_equipos": True,
+        "eliminar_equipos": True,
+        "trasladar_equipos": True,
+        "gestion_usuarios": True,
+        "renombrar_oficinas": True,
+        "exportar_importar": True,
+        "ver_todas_oficinas": False
+    },
+    "Visualizador": {
+        "crear_equipos": False,
+        "editar_equipos": False,
+        "eliminar_equipos": False,
+        "trasladar_equipos": False,
+        "gestion_usuarios": False,
+        "renombrar_oficinas": False,
+        "exportar_importar": False,
+        "ver_todas_oficinas": False
+    }
+}
+
+def cargar_permisos():
+    if os.path.exists(ARCHIVO_PERMISOS):
+        try:
+            with open(ARCHIVO_PERMISOS, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    guardar_permisos(PERMISOS_DEFAULT)
+    return PERMISOS_DEFAULT
+
+def guardar_permisos(permisos):
+    with open(ARCHIVO_PERMISOS, "w", encoding="utf-8") as f:
+        json.dump(permisos, f, ensure_ascii=False, indent=4)
+
+# --- GESTIÓN DE USUARIOS ---
 def cargar_usuarios():
     if os.path.exists(ARCHIVO_USUARIOS):
         try:
             with open(ARCHIVO_USUARIOS, "r", encoding="utf-8") as f:
                 usuarios = json.load(f)
-                # Garantizar que todos tengan campo 'oficina'
                 for u in usuarios:
                     if "oficina" not in usuarios[u]:
                         usuarios[u]["oficina"] = "Oficina Principal"
                 return usuarios
         except Exception:
             pass
-    # Usuarios por defecto
+    # Usuarios por defecto incluyendo el usuario MASTER
     usuarios_default = {
+        "master": {"clave": "master123", "rol": "Master", "oficina": "Sede Central (Master)"},
         "admin": {"clave": "admin123", "rol": "Administrador", "oficina": "Oficina Principal"},
-        "usuario": {"clave": "user123", "rol": "Visualizador", "oficina": "Oficina Norte"}
+        "user1": {"clave": "user123", "rol": "Visualizador", "oficina": "Oficina Norte"}
     }
     guardar_usuarios(usuarios_default)
     return usuarios_default
@@ -47,9 +89,11 @@ def guardar_usuarios(usuarios):
     with open(ARCHIVO_USUARIOS, "w", encoding="utf-8") as f:
         json.dump(usuarios, f, ensure_ascii=False, indent=4)
 
+# --- INICIALIZAR PERMISOS Y USUARIOS ---
 USUARIOS = cargar_usuarios()
+PERMISOS = cargar_permisos()
 
-# --- CONTROL DE SESIÓN Y LOGIN ---
+# --- CONTROL DE SESIÓN ---
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
     st.session_state["usuario"] = ""
@@ -70,7 +114,7 @@ def login():
                 st.session_state["usuario"] = user_input
                 st.session_state["rol"] = usuarios_actuales[user_input]["rol"]
                 st.session_state["oficina"] = usuarios_actuales[user_input].get("oficina", "Oficina Principal")
-                st.success(f"Bienvenido {user_input} ({usuarios_actuales[user_input]['rol']}) - {st.session_state['oficina']}")
+                st.success(f"Bienvenido {user_input} [{usuarios_actuales[user_input]['rol']}]")
                 st.rerun()
             else:
                 st.error("⚠️ Usuario o contraseña incorrectos.")
@@ -82,20 +126,29 @@ def logout():
     st.session_state["oficina"] = ""
     st.rerun()
 
-# Si no está autenticado, muestra pantalla de login
 if not st.session_state["autenticado"]:
     login()
     st.stop()
 
-# --- MOSTRAR BARRA LATERAL DE USUARIO, ROL Y OFICINA ---
+# --- VERIFICACIÓN DE PERMISOS DINÁMICOS ---
+rol_actual = st.session_state["rol"]
+es_master = (rol_actual == "Master")
+
+def tiene_permiso(accion):
+    if es_master:
+        return True
+    permisos_actuales = cargar_permisos()
+    return permisos_actuales.get(rol_actual, {}).get(accion, False)
+
+# Sidebar
+st.sidebar.markdown(f"👑 **Rol:** `{st.session_state['rol']}`")
 st.sidebar.markdown(f"👤 **Usuario:** `{st.session_state['usuario']}`")
-st.sidebar.markdown(f"🔑 **Rol:** `{st.session_state['rol']}`")
-st.sidebar.markdown(f"🏢 **Oficina Asignada:** `{st.session_state['oficina']}`")
+st.sidebar.markdown(f"🏢 **Tu Oficina:** `{st.session_state['oficina']}`")
 if st.sidebar.button("🚪 Cerrar Sesión"):
     logout()
 st.sidebar.divider()
 
-# --- FUNCIONES DE BASE DE DATOS INVENTARIO ---
+# --- BASE DE DATOS INVENTARIO ---
 def cargar_datos():
     if os.path.exists(ARCHIVO_DATOS):
         try:
@@ -115,154 +168,159 @@ def guardar_datos(df):
 
 df = cargar_datos()
 
-st.title("📦 Sistema de Inventario Multioficina")
+# Lista de oficinas registradas
+usuarios_dict = cargar_usuarios()
+oficinas_usuarios = [u["oficina"] for u in usuarios_dict.values() if "oficina" in u]
+oficinas_equipos = df["OFICINA"].unique().tolist() if not df.empty else []
+lista_oficinas = sorted(list(set(oficinas_usuarios + oficinas_equipos + ["Oficina Principal"])))
 
-# Opciones del Menú según el Rol
-es_admin = st.session_state["rol"] == "Administrador"
+st.title("📦 Gestión de Inventario Multioficina")
 
-opciones_menu = ["📋 Buscar y Gestionar Inventario"]
-if es_admin:
-    opciones_menu.extend([
-        "➕ Registrar Nuevo Equipo",
-        "💾 Importar / Exportar Respaldos",
-        "👥 Gestión de Usuarios y Oficinas"
-    ])
+# --- MENÚ DE NAVEGACIÓN ---
+opciones_menu = ["📋 Consultar Inventario"]
+if tiene_permiso("crear_equipos"):
+    opciones_menu.append("➕ Registrar Nuevo Equipo")
+if tiene_permiso("trasladar_equipos"):
+    opciones_menu.append("🚚 Traslados entre Oficinas")
+if tiene_permiso("gestion_usuarios"):
+    opciones_menu.append("👥 Gestión de Usuarios")
+if tiene_permiso("renombrar_oficinas"):
+    opciones_menu.append("🏢 Editar Nombres de Oficinas")
+if tiene_permiso("exportar_importar"):
+    opciones_menu.append("💾 Respaldos (Excel)")
+if es_master:
+    opciones_menu.append("⚙️ Panel Master (Permisos del Sistema)")
 
 opcion = st.sidebar.selectbox("Selecciona una opción", opciones_menu)
 
-# Obtener lista de oficinas disponibles del sistema
-usuarios_dict = cargar_usuarios()
-lista_oficinas_registradas = sorted(list(set([u["oficina"] for u in usuarios_dict.values() if "oficina" in u] + ["Oficina Principal", "Oficina Norte", "Oficina Sur"])))
-
-# 1. BUSCAR Y GESTIONAR
-if opcion == "📋 Buscar y Gestionar Inventario":
-    col_titulo, col_metrica = st.columns([3, 1])
+# 1. CONSULTAR Y GESTIONAR INVENTARIO
+if opcion == "📋 Consultar Inventario":
+    col_t, col_m = st.columns([3, 1])
     
-    # Filtro por oficina según el rol
-    if es_admin:
-        oficinas_filtro = ["Todas las Oficinas"] + lista_oficinas_registradas
-        oficina_seleccionada = st.sidebar.selectbox("🏬 Filtrar Inventario por Oficina:", oficinas_filtro)
+    # Control estricto de visibilidad por Oficina
+    if es_master or tiene_permiso("ver_todas_oficinas"):
+        oficinas_filtro = ["Todas las Oficinas"] + lista_oficinas
+        oficina_sel = st.sidebar.selectbox("🏬 Filtrar por Oficina:", oficinas_filtro)
     else:
-        oficina_seleccionada = st.session_state["oficina"]
-        st.sidebar.info(f"Visualizando únicamente inventario de: **{oficina_seleccionada}**")
+        oficina_sel = st.session_state["oficina"]
+        st.sidebar.info(f"🔒 Mostrando únicamente tu oficina: **{oficina_sel}**")
 
-    # Filtrado de DataFrame por oficina
-    if oficina_seleccionada == "Todas las Oficinas":
-        df_oficina = df.copy()
+    if oficina_sel == "Todas las Oficinas":
+        df_view = df.copy()
     else:
-        df_oficina = df[df["OFICINA"].astype(str) == oficina_seleccionada]
+        df_view = df[df["OFICINA"].astype(str) == oficina_sel]
 
-    with col_titulo:
-        st.subheader(f"📋 Consultar Inventario ({oficina_seleccionada})")
-    with col_metrica:
-        st.metric(label="📊 Total de Equipos", value=len(df_oficina))
-    
+    with col_t:
+        st.subheader(f"📋 Equipos en: {oficina_sel}")
+    with col_m:
+        st.metric(label="📊 Total Equipos", value=len(df_view))
+
     busqueda = st.text_input("🔍 Buscar por MV, Material, Ubicación, Objeto técnico, etc.:")
     
-    if not df_oficina.empty:
+    if not df_view.empty:
         if busqueda:
-            mascara = df_oficina.apply(lambda row: row.astype(str).str.contains(busqueda, case=False).any(), axis=1)
-            df_filtrado = df_oficina[mascara]
-            st.write(f"Resultados encontrados: **{len(df_filtrado)}** de **{len(df_oficina)}**")
-            st.dataframe(df_filtrado, use_container_width=True)
-            df_mostrar = df_filtrado
+            mascara = df_view.apply(lambda row: row.astype(str).str.contains(busqueda, case=False).any(), axis=1)
+            df_mostrar = df_view[mascara]
         else:
-            st.dataframe(df_oficina, use_container_width=True)
-            df_mostrar = df_oficina
+            df_mostrar = df_view
+            
+        st.dataframe(df_mostrar, use_container_width=True)
 
-        if not df_mostrar.empty:
+        if not df_mostrar.empty and (tiene_permiso("editar_equipos") or tiene_permiso("eliminar_equipos")):
             st.divider()
-            st.subheader("⚡ Acciones Rápidas sobre Registro Seleccionado")
+            st.subheader("⚡ Acciones sobre Equipo Seleccionado")
             
             lista_mvs = df_mostrar["MV"].astype(str).unique().tolist()
-            mv_seleccionado = st.selectbox("Selecciona el código MV para gestionar:", lista_mvs)
+            mv_sel = st.selectbox("Selecciona el código MV para gestionar:", lista_mvs)
             
-            registro_idx = df[df["MV"].astype(str) == mv_seleccionado].index[0]
-            registro = df.loc[registro_idx]
-            
-            if es_admin:
-                tab_editar, tab_eliminar = st.tabs(["✏️ Editar Registro / Reubicar Oficina", "🗑️ Eliminar Registro"])
-                
-                with tab_editar:
-                    with st.form("form_editar_directo"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            mv_edit = st.text_input("MV", value=str(registro["MV"]))
-                            material_edit = st.text_input("Material", value=str(registro["Material"]))
-                            denominacion_obj_edit = st.text_input("Denominación de objeto técnico", value=str(registro["Denominación de objeto técnico"]))
-                            stat_sist_edit = st.text_input("Stat.sist.", value=str(registro["Stat.sist."]))
-                            stat_usu_edit = st.text_input("StatUsu", value=str(registro["StatUsu"]))
-                        with col2:
-                            estatus_actual_edit = st.text_input("ESTATUS ACTUAL.", value=str(registro["ESTATUS ACTUAL."]))
-                            denomin_edit = st.text_input("Denomin.", value=str(registro["Denomin."]))
-                            ubicacion_edit = st.text_input("UBICACIÓN ACTUAL", value=str(registro["UBICACIÓN ACTUAL"]))
-                            
-                            # Selección de oficina
-                            oficina_actual_reg = str(registro["OFICINA"]) if registro["OFICINA"] else st.session_state["oficina"]
-                            idx_of = lista_oficinas_registradas.index(oficina_actual_reg) if oficina_actual_reg in lista_oficinas_registradas else 0
-                            oficina_edit = st.selectbox("🏬 OFICINA PERTENECE", lista_oficinas_registradas, index=idx_of)
-                            
-                            observaciones_edit = st.text_area("OBSERVACIONES", value=str(registro["OBSERVACIONES"]))
-                            
-                        actualizar = st.form_submit_button("💾 Guardar Cambios")
-                        
-                        if actualizar:
-                            df = df.astype(object)
-                            df.loc[registro_idx, "MV"] = str(mv_edit)
-                            df.loc[registro_idx, "Material"] = str(material_edit)
-                            df.loc[registro_idx, "Denominación de objeto técnico"] = str(denominacion_obj_edit)
-                            df.loc[registro_idx, "Stat.sist."] = str(stat_sist_edit)
-                            df.loc[registro_idx, "StatUsu"] = str(stat_usu_edit)
-                            df.loc[registro_idx, "ESTATUS ACTUAL."] = str(estatus_actual_edit)
-                            df.loc[registro_idx, "Denomin."] = str(denomin_edit)
-                            df.loc[registro_idx, "UBICACIÓN ACTUAL"] = str(ubicacion_edit)
-                            df.loc[registro_idx, "OFICINA"] = str(oficina_edit)
-                            df.loc[registro_idx, "OBSERVACIONES"] = str(observaciones_edit)
-                            
-                            guardar_datos(df)
-                            st.success("✅ Registro actualizado con éxito.")
-                            st.rerun()
+            reg_idx = df[df["MV"].astype(str) == mv_sel].index[0]
+            registro = df.loc[reg_idx]
 
-                with tab_eliminar:
-                    st.warning(f"⚠️ ¿Estás seguro de que deseas borrar permanentemente el equipo con MV: **{mv_seleccionado}**?")
-                    if st.button("❌ Confirmar Eliminación"):
-                        df = df[df["MV"].astype(str) != mv_seleccionado]
-                        guardar_datos(df)
-                        st.success(f"✅ El equipo {mv_seleccionado} ha sido eliminado.")
-                        st.rerun()
+            # Verificación de seguridad de oficina
+            if not es_master and not tiene_permiso("ver_todas_oficinas") and str(registro["OFICINA"]) != st.session_state["oficina"]:
+                st.error("⚠️ No tienes permisos para modificar equipos pertenecientes a otra oficina.")
             else:
-                st.info("🔒 Estás en modo 'Visualizador'. Para modificar equipos o cambiar su oficina consulta con un Administrador.")
+                tabs_acciones = []
+                if tiene_permiso("editar_equipos"): tabs_acciones.append("✏️ Editar Equipo")
+                if tiene_permiso("eliminar_equipos"): tabs_acciones.append("🗑️ Eliminar Equipo")
+                
+                tabs = st.tabs(tabs_acciones)
+                
+                if tiene_permiso("editar_equipos"):
+                    with tabs[0]:
+                        with st.form("form_edit_eq"):
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                mv_e = st.text_input("MV", value=str(registro["MV"]))
+                                mat_e = st.text_input("Material", value=str(registro["Material"]))
+                                den_obj_e = st.text_input("Denominación Objeto Técnico", value=str(registro["Denominación de objeto técnico"]))
+                                stat_s_e = st.text_input("Stat.sist.", value=str(registro["Stat.sist."]))
+                                stat_u_e = st.text_input("StatUsu", value=str(registro["StatUsu"]))
+                            with c2:
+                                est_e = st.text_input("ESTATUS ACTUAL.", value=str(registro["ESTATUS ACTUAL."]))
+                                den_e = st.text_input("Denomin.", value=str(registro["Denomin."]))
+                                ubi_e = st.text_input("UBICACIÓN ACTUAL", value=str(registro["UBICACIÓN ACTUAL"]))
+                                obs_e = st.text_area("OBSERVACIONES", value=str(registro["OBSERVACIONES"]))
+                                
+                            if st.form_submit_button("💾 Guardar Cambios"):
+                                df.loc[reg_idx, "MV"] = str(mv_e)
+                                df.loc[reg_idx, "Material"] = str(mat_e)
+                                df.loc[reg_idx, "Denominación de objeto técnico"] = str(den_obj_e)
+                                df.loc[reg_idx, "Stat.sist."] = str(stat_s_e)
+                                df.loc[reg_idx, "StatUsu"] = str(stat_u_e)
+                                df.loc[reg_idx, "ESTATUS ACTUAL."] = str(est_e)
+                                df.loc[reg_idx, "Denomin."] = str(den_e)
+                                df.loc[reg_idx, "UBICACIÓN ACTUAL"] = str(ubi_e)
+                                df.loc[reg_idx, "OBSERVACIONES"] = str(obs_e)
+                                guardar_datos(df)
+                                st.success("✅ Equipo actualizado correctamente.")
+                                st.rerun()
+
+                if tiene_permiso("eliminar_equipos"):
+                    idx_tab_del = 1 if tiene_permiso("editar_equipos") else 0
+                    with tabs[idx_tab_del]:
+                        st.warning(f"⚠️ ¿Deseas eliminar permanentemente el equipo **{mv_sel}**?")
+                        if st.button("❌ Confirmar Eliminación"):
+                            df = df[df["MV"].astype(str) != mv_sel]
+                            guardar_datos(df)
+                            st.success(f"✅ Equipo {mv_sel} eliminado.")
+                            st.rerun()
     else:
-        st.info(f"El inventario de {oficina_seleccionada} está vacío actualmente.")
+        st.info(f"No hay equipos registrados en {oficina_sel}.")
 
 # 2. REGISTRAR NUEVO EQUIPO
-elif opcion == "➕ Registrar Nuevo Equipo" and es_admin:
+elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
     st.subheader("➕ Registrar Nuevo Equipo")
     
     with st.form("form_agregar"):
-        col1, col2 = st.columns(2)
-        with col1:
+        c1, c2 = st.columns(2)
+        with c1:
             mv = st.text_input("MV / Identificador (Único)")
             material = st.text_input("Material")
             denominacion_obj = st.text_input("Denominación de objeto técnico")
             stat_sist = st.text_input("Stat.sist.")
             stat_usu = st.text_input("StatUsu")
-        with col2:
+        with c2:
             estatus_actual = st.selectbox("ESTATUS ACTUAL.", ["Bueno", "Regular", "Malo", "En revisión", "De baja", "Otro"])
             denomin = st.text_input("Denomin.")
             ubicacion = st.text_input("UBICACIÓN ACTUAL")
-            oficina_destino = st.selectbox("🏬 Oficina a la que pertenece:", lista_oficinas_registradas)
+            
+            # Si no es master, asigna automáticamente a su oficina
+            if es_master or tiene_permiso("ver_todas_oficinas"):
+                oficina_dest = st.selectbox("🏬 Oficina Asignada:", lista_oficinas)
+            else:
+                oficina_dest = st.session_state["oficina"]
+                st.info(f"El equipo se asignará a tu oficina: **{oficina_dest}**")
+                
             observaciones = st.text_area("OBSERVACIONES")
             
-        guardado = st.form_submit_button("Guardar Equipo")
-        
-        if guardado:
+        if st.form_submit_button("Guardar Equipo"):
             if not mv:
-                st.error("⚠️ El campo 'MV' es obligatorio ya que identifica al equipo.")
+                st.error("⚠️ El campo 'MV' es obligatorio.")
             elif str(mv) in df["MV"].astype(str).values:
-                st.error(f"⚠️ El código MV '{mv}' ya existe en el inventario.")
+                st.error(f"⚠️ El código MV '{mv}' ya existe.")
             else:
-                nuevo_registro = pd.DataFrame([{
+                nuevo_reg = pd.DataFrame([{
                     "MV": str(mv),
                     "Material": str(material),
                     "Denominación de objeto técnico": str(denominacion_obj),
@@ -271,157 +329,275 @@ elif opcion == "➕ Registrar Nuevo Equipo" and es_admin:
                     "ESTATUS ACTUAL.": str(estatus_actual),
                     "Denomin.": str(denomin),
                     "UBICACIÓN ACTUAL": str(ubicacion),
-                    "OFICINA": str(oficina_destino),
+                    "OFICINA": str(oficina_dest),
                     "OBSERVACIONES": str(observaciones)
                 }])
-                df = pd.concat([df, nuevo_registro], ignore_index=True)
+                df = pd.concat([df, nuevo_reg], ignore_index=True)
                 guardar_datos(df)
-                st.success(f"✅ Equipo registrado con éxito en **{oficina_destino}**.")
+                st.success(f"✅ Equipo registrado en **{oficina_dest}**.")
                 st.rerun()
 
-# 3. IMPORTAR / EXPORTAR RESPALDOS
-elif opcion == "💾 Importar / Exportar Respaldos" and es_admin:
-    st.subheader("📥 Exportar Respaldo (Excel)")
+# 3. TRASLADOS ENTRE OFICINAS Y GENERACIÓN DE CUADRO EXCEL DE ENVÍO
+elif opcion == "🚚 Traslados entre Oficinas" and tiene_permiso("trasladar_equipos"):
+    st.subheader("🚚 Traslado de Equipos entre Oficinas con Cuadro de Envío")
     
-    if not df.empty:
-        import io
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Inventario')
-        
-        st.download_button(
-            label="📥 Descargar Excel General de Inventario",
-            data=buffer.getvalue(),
-            file_name="Inventario_General_Multioficina.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    # Definir oficina origen
+    if es_master or tiene_permiso("ver_todas_oficinas"):
+        oficina_origen = st.selectbox("🏢 Oficina Origen del Traslado:", lista_oficinas)
     else:
-        st.info("El inventario está vacío. No hay datos para exportar.")
-        
-    st.divider()
-    
-    st.subheader("📤 Importar Datos desde Excel")
-    archivo_subido = st.file_uploader("Cargar archivo Excel (.xlsx)", type=["xlsx", "xls"])
-    modo_importacion = st.radio("Modo de importación:", ["Reemplazar todo el inventario", "Anexar nuevos registros sin borrar los existentes"])
-    
-    if archivo_subido is not None:
-        if st.button("Procesar e Importar"):
-            try:
-                df_nuevo = pd.read_excel(archivo_subido, dtype=str).fillna("")
-                
-                for col in COLUMNAS:
-                    if col not in df_nuevo.columns:
-                        df_nuevo[col] = "Oficina Principal" if col == "OFICINA" else ""
-                df_nuevo = df_nuevo[COLUMNAS]
-                
-                if modo_importacion == "Reemplazar todo el inventario":
-                    df_final = df_nuevo
-                else:
-                    df_final = pd.concat([df, df_nuevo], ignore_index=True).drop_duplicates(subset=["MV"], keep="last")
-                
-                guardar_datos(df_final)
-                st.success("✅ Archivo importado correctamente.")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error al leer el archivo Excel: {e}")
+        oficina_origen = st.session_state["oficina"]
+        st.info(f"Oficina Origen: **{oficina_origen}**")
 
-# 4. GESTIÓN DE USUARIOS Y OFICINAS
-elif opcion == "👥 Gestión de Usuarios y Oficinas" and es_admin:
-    st.subheader("👥 Administración de Usuarios y Asignación de Oficinas")
+    # Obtener equipos disponibles en el origen
+    df_origen = df[df["OFICINA"].astype(str) == oficina_origen]
+    
+    if df_origen.empty:
+        st.warning(f"No hay equipos en **{oficina_origen}** para realizar traslados.")
+    else:
+        oficinas_destino_opt = [o for o in lista_oficinas if o != oficina_origen]
+        oficina_destino = st.selectbox("🎯 Oficina Destino:", oficinas_destino_opt)
+        
+        equipos_a_trasladar = st.multiselect(
+            "📦 Selecciona los equipos a trasladar (por MV / Objeto):",
+            options=df_origen["MV"].tolist(),
+            format_func=lambda x: f"MV: {x} - {df_origen[df_origen['MV']==x]['Denominación de objeto técnico'].values[0]}"
+        )
+        
+        motivo = st.text_area("📝 Motivo u Observación del Traslado:")
+        
+        if st.button("🚀 Ejecutar Traslado y Generar Cuadro de Envío (Excel)"):
+            if not equipos_a_trasladar:
+                st.error("⚠️ Debes seleccionar al menos un equipo para trasladar.")
+            elif not oficina_destino:
+                st.error("⚠️ Debes seleccionar una oficina destino válida.")
+            else:
+                # 1. Cambiar oficina en el DataFrame principal
+                df.loc[df["MV"].isin(equipos_a_trasladar), "OFICINA"] = oficina_destino
+                guardar_datos(df)
+                
+                # 2. Generar Excel "Cuadro de Envío / Guía de Traslado"
+                df_trasladados = df_origen[df_origen["MV"].isin(equipos_a_trasladar)].copy()
+                fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    # Hoja 1: Resumen del Envío
+                    df_resumen = pd.DataFrame([
+                        {"FECHA DE ENVÍO": fecha_hoy,
+                         "OFICINA ORIGEN": oficina_origen,
+                         "OFICINA DESTINO": oficina_destino,
+                         "RESPONSABLE DE ENVÍO": st.session_state["usuario"],
+                         "CANTIDAD DE EQUIPOS": len(equipos_a_trasladar),
+                         "MOTIVO": motivo}
+                    ])
+                    df_resumen.to_excel(writer, sheet_name="Guía de Envío", index=False)
+                    
+                    # Hoja 2: Detalle de Equipos Trasladados
+                    df_trasladados.to_excel(writer, sheet_name="Equipos Detalle", index=False)
+                
+                st.success(f"✅ ¡Traslado completado! **{len(equipos_a_trasladar)} equipo(s)** movidos de **{oficina_origen}** a **{oficina_destino}**.")
+                
+                st.download_button(
+                    label="📄 Descargar Cuadro de Envío (Excel)",
+                    data=output.getvalue(),
+                    file_name=f"Cuadro_Envio_{oficina_origen}_a_{oficina_destino}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+# 4. GESTIÓN DE USUARIOS
+elif opcion == "👥 Gestión de Usuarios" and tiene_permiso("gestion_usuarios"):
+    st.subheader("👥 Administración de Usuarios del Sistema")
     
     usuarios_dict = cargar_usuarios()
     
-    st.write("### 📋 Usuarios Registrados y sus Oficinas")
-    df_usuarios = pd.DataFrame([
+    df_u = pd.DataFrame([
         {"Usuario": u, "Rol": datos["rol"], "Oficina Asignada": datos.get("oficina", "Oficina Principal")}
         for u, datos in usuarios_dict.items()
     ])
-    st.dataframe(df_usuarios, use_container_width=True)
-    
+    st.dataframe(df_u, use_container_width=True)
     st.divider()
     
-    tab_crear, tab_editar_u, tab_eliminar_u = st.tabs(["➕ Crear Usuario", "✏️ Editar Usuario y Oficina", "🗑️ Eliminar Usuario"])
+    t_crear, t_editar, t_eliminar = st.tabs(["➕ Crear Usuario", "✏️ Editar Usuario", "🗑️ Eliminar Usuario"])
     
-    # CREAR USUARIO
-    with tab_crear:
-        with st.form("form_nuevo_usuario"):
-            nuevo_user = st.text_input("Nombre de Usuario").strip()
-            nueva_clave = st.text_input("Contraseña", type="password")
-            nuevo_rol = st.selectbox("Rol del Usuario", ["Visualizador", "Administrador"])
+    with t_crear:
+        with st.form("f_crear_u"):
+            u_nom = st.text_input("Nombre de Usuario").strip()
+            u_pass = st.text_input("Contraseña", type="password")
             
-            # Campo para especificar u ofrecer oficinas
-            nueva_oficina_input = st.text_input("🏬 Nombre de la Oficina (Ej: Oficina Principal, Sucursal Norte, Depósito Central):", value="Oficina Principal").strip()
+            roles_disp = ["Administrador", "Visualizador"]
+            if es_master: roles_disp.append("Master")
+            u_rol = st.selectbox("Rol", roles_disp)
             
-            btn_crear_user = st.form_submit_button("➕ Crear Usuario")
+            u_of = st.selectbox("Oficina Asignada", lista_oficinas)
             
-            if btn_crear_user:
-                if not nuevo_user or not nueva_clave or not nueva_oficina_input:
-                    st.error("⚠️ Debes completar todos los campos obligatorios.")
-                elif nuevo_user in usuarios_dict:
-                    st.error(f"⚠️ El usuario '{nuevo_user}' ya existe.")
+            if st.form_submit_button("➕ Crear Usuario"):
+                if not u_nom or not u_pass:
+                    st.error("⚠️ Usuario y contraseña son obligatorios.")
+                elif u_nom in usuarios_dict:
+                    st.error(f"⚠️ El usuario '{u_nom}' ya existe.")
                 else:
-                    usuarios_dict[nuevo_user] = {
-                        "clave": nueva_clave,
-                        "rol": nuevo_rol,
-                        "oficina": nueva_oficina_input
-                    }
+                    usuarios_dict[u_nom] = {"clave": u_pass, "rol": u_rol, "oficina": u_of}
                     guardar_usuarios(usuarios_dict)
-                    st.success(f"✅ Usuario '{nuevo_user}' creado exitosamente en **{nueva_oficina_input}**.")
+                    st.success(f"✅ Usuario '{u_nom}' creado exitosamente.")
                     st.rerun()
 
-    # EDITAR USUARIO (INCLUYENDO ADMIN)
-    with tab_editar_u:
-        usuario_a_editar = st.selectbox("Selecciona el usuario que deseas modificar:", list(usuarios_dict.keys()), key="select_edit_user")
-        datos_actuales = usuarios_dict[usuario_a_editar]
+    with t_editar:
+        u_sel = st.selectbox("Selecciona Usuario a Editar:", list(usuarios_dict.keys()))
+        d_act = usuarios_dict[u_sel]
         
-        with st.form("form_editar_usuario"):
-            nuevo_nombre_user = st.text_input("Nuevo Nombre de Usuario", value=usuario_a_editar).strip()
-            nueva_clave_user = st.text_input("Nueva Contraseña", value=datos_actuales["clave"])
+        with st.form("f_edit_u"):
+            n_nom = st.text_input("Nuevo Usuario", value=u_sel).strip()
+            n_pass = st.text_input("Nueva Contraseña", value=d_act["clave"])
             
-            roles = ["Administrador", "Visualizador"]
-            idx_rol = roles.index(datos_actuales["rol"]) if datos_actuales["rol"] in roles else 0
-            nuevo_rol_user = st.selectbox("Rol del Usuario", roles, index=idx_rol)
+            roles_disp = ["Administrador", "Visualizador"]
+            if es_master: roles_disp.append("Master")
+            idx_r = roles_disp.index(d_act["rol"]) if d_act["rol"] in roles_disp else 0
+            n_rol = st.selectbox("Rol", roles_disp, index=idx_r)
             
-            nueva_oficina_edit = st.text_input("🏬 Oficina Asignada (puedes escribir una nueva oficina o conservar la actual):", value=datos_actuales.get("oficina", "Oficina Principal")).strip()
+            idx_of = lista_oficinas.index(d_act.get("oficina", "Oficina Principal")) if d_act.get("oficina") in lista_oficinas else 0
+            n_of = st.selectbox("Oficina Asignada", lista_oficinas, index=idx_of)
             
-            btn_actualizar_user = st.form_submit_button("💾 Guardar Cambios")
-            
-            if btn_actualizar_user:
-                if not nuevo_nombre_user or not nueva_clave_user or not nueva_oficina_edit:
-                    st.error("⚠️ Ningún campo puede quedar vacío.")
-                elif nuevo_nombre_user != usuario_a_editar and nuevo_nombre_user in usuarios_dict:
-                    st.error(f"⚠️ El usuario '{nuevo_nombre_user}' ya existe.")
-                else:
-                    if nuevo_nombre_user != usuario_a_editar:
-                        del usuarios_dict[usuario_a_editar]
-                        
-                    usuarios_dict[nuevo_nombre_user] = {
-                        "clave": nueva_clave_user,
-                        "rol": nuevo_rol_user,
-                        "oficina": nueva_oficina_edit
-                    }
-                    guardar_usuarios(usuarios_dict)
-                    
-                    # Actualizar la sesión actual si editaste tu propio usuario
-                    if st.session_state["usuario"] == usuario_a_editar:
-                        st.session_state["usuario"] = nuevo_nombre_user
-                        st.session_state["rol"] = nuevo_rol_user
-                        st.session_state["oficina"] = nueva_oficina_edit
-                    
-                    st.success(f"✅ Usuario '{nuevo_nombre_user}' y su oficina asignada se actualizaron correctamente.")
-                    st.rerun()
-
-    # ELIMINAR USUARIO
-    with tab_eliminar_u:
-        usuario_a_borrar = st.selectbox("Selecciona un usuario a eliminar:", list(usuarios_dict.keys()), key="select_del_user")
-        
-        if st.button("❌ Eliminar Usuario Seleccionado"):
-            if usuario_a_borrar == st.session_state["usuario"]:
-                st.error("⚠️ No puedes eliminar el usuario con el que tienes sesión iniciada actualmente.")
-            elif len(usuarios_dict) <= 1:
-                st.error("⚠️ Debe existir al menos un usuario en el sistema.")
-            else:
-                del usuarios_dict[usuario_a_borrar]
+            if st.form_submit_button("💾 Guardar Cambios"):
+                if n_nom != u_sel:
+                    del usuarios_dict[u_sel]
+                usuarios_dict[n_nom] = {"clave": n_pass, "rol": n_rol, "oficina": n_of}
                 guardar_usuarios(usuarios_dict)
-                st.success(f"✅ Usuario '{usuario_a_borrar}' eliminado.")
+                
+                if st.session_state["usuario"] == u_sel:
+                    st.session_state["usuario"] = n_nom
+                    st.session_state["rol"] = n_rol
+                    st.session_state["oficina"] = n_of
+                    
+                st.success(f"✅ Usuario '{n_nom}' actualizado.")
                 st.rerun()
+
+    with t_eliminar:
+        u_del = st.selectbox("Selecciona Usuario a Eliminar:", list(usuarios_dict.keys()), key="del_u")
+        if st.button("❌ Eliminar Usuario"):
+            if u_del == st.session_state["usuario"]:
+                st.error("⚠️ No puedes eliminar tu propio usuario activo.")
+            else:
+                del usuarios_dict[u_del]
+                guardar_usuarios(usuarios_dict)
+                st.success(f"✅ Usuario '{u_del}' eliminado.")
+                st.rerun()
+
+# 5. EDITAR NOMBRES DE LAS OFICINAS
+elif opcion == "🏢 Editar Nombres de Oficinas" and tiene_permiso("renombrar_oficinas"):
+    st.subheader("🏢 Edición y Renombrado de Oficinas")
+    st.write("Cambia el nombre de una oficina. Se actualizarán automáticamente los usuarios y los equipos asociados.")
+    
+    oficina_origen_renombrar = st.selectbox("Selecciona la oficina a renombrar:", lista_oficinas)
+    nuevo_nombre_oficina = st.text_input("Escribe el nuevo nombre de la oficina:").strip()
+    
+    if st.button("💾 Renombrar Oficina"):
+        if not nuevo_nombre_oficina:
+            st.error("⚠️ El nuevo nombre no puede estar vacío.")
+        elif nuevo_nombre_oficina in lista_oficinas:
+            st.error("⚠️ Ya existe una oficina con ese nombre.")
+        else:
+            # 1. Renombrar en usuarios.json
+            for u in usuarios_dict:
+                if usuarios_dict[u].get("oficina") == oficina_origen_renombrar:
+                    usuarios_dict[u]["oficina"] = nuevo_nombre_oficina
+            guardar_usuarios(usuarios_dict)
+            
+            # 2. Renombrar en inventario_equipos.xlsx
+            if not df.empty:
+                df.loc[df["OFICINA"] == oficina_origen_renombrar, "OFICINA"] = nuevo_nombre_oficina
+                guardar_datos(df)
+                
+            # Update current session if affected
+            if st.session_state["oficina"] == oficina_origen_renombrar:
+                st.session_state["oficina"] = nuevo_nombre_oficina
+                
+            st.success(f"✅ La oficina **'{oficina_origen_renombrar}'** ha sido renombrada con éxito a **'{nuevo_nombre_oficina}'**.")
+            st.rerun()
+
+# 6. IMPORTAR Y EXPORTAR RESPALDOS
+elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
+    st.subheader("📥 Exportar Respaldo General (Excel)")
+    if not df.empty:
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Inventario')
+        st.download_button(
+            label="📥 Descargar Excel de Inventario",
+            data=buffer.getvalue(),
+            file_name="Inventario_General_Respaldo.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    st.divider()
+    st.subheader("📤 Importar Respaldo (Excel)")
+    up_file = st.file_uploader("Cargar Excel", type=["xlsx", "xls"])
+    if up_file and st.button("Procesar e Importar"):
+        try:
+            df_n = pd.read_excel(up_file, dtype=str).fillna("")
+            for c in COLUMNAS:
+                if c not in df_n.columns:
+                    df_n[c] = "Oficina Principal" if c == "OFICINA" else ""
+            df_final = df_n[COLUMNAS]
+            guardar_datos(df_final)
+            st.success("✅ Datos importados correctamente.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error al importar: {e}")
+
+# 7. PANEL MASTER DE CONTROL DE PERMISOS
+elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
+    st.subheader("⚙️ Panel de Control Master - Gestión Dinámica de Permisos")
+    st.write("Configura lo que los roles **Administrador** y **Visualizador** tienen permitido realizar en todo el sistema:")
+    
+    permisos_config = cargar_permisos()
+    
+    with st.form("form_permisos_master"):
+        col_adm, col_vis = st.columns(2)
+        
+        with col_adm:
+            st.markdown("### 🛠️ Permisos: Administrador")
+            p_adm_crear = st.checkbox("Crear Equipos", value=permisos_config["Administrador"].get("crear_equipos", True))
+            p_adm_editar = st.checkbox("Editar Equipos", value=permisos_config["Administrador"].get("editar_equipos", True))
+            p_adm_eliminar = st.checkbox("Eliminar Equipos", value=permisos_config["Administrador"].get("eliminar_equipos", True))
+            p_adm_traslado = st.checkbox("Trasladar Equipos entre Oficinas", value=permisos_config["Administrador"].get("trasladar_equipos", True))
+            p_adm_users = st.checkbox("Gestionar Usuarios", value=permisos_config["Administrador"].get("gestion_usuarios", True))
+            p_adm_renombrar = st.checkbox("Renombrar Oficinas", value=permisos_config["Administrador"].get("renombrar_oficinas", True))
+            p_adm_respaldos = st.checkbox("Exportar e Importar Respaldos", value=permisos_config["Administrador"].get("exportar_importar", True))
+            p_adm_ver_todo = st.checkbox("Ver Inventario de TODAS las Oficinas", value=permisos_config["Administrador"].get("ver_todas_oficinas", False))
+            
+        with col_vis:
+            st.markdown("### 👁️ Permisos: Visualizador")
+            p_vis_crear = st.checkbox("Crear Equipos ", value=permisos_config["Visualizador"].get("crear_equipos", False))
+            p_vis_editar = st.checkbox("Editar Equipos ", value=permisos_config["Visualizador"].get("editar_equipos", False))
+            p_vis_eliminar = st.checkbox("Eliminar Equipos ", value=permisos_config["Visualizador"].get("eliminar_equipos", False))
+            p_vis_traslado = st.checkbox("Trasladar Equipos ", value=permisos_config["Visualizador"].get("trasladar_equipos", False))
+            p_vis_users = st.checkbox("Gestionar Usuarios ", value=permisos_config["Visualizador"].get("gestion_usuarios", False))
+            p_vis_renombrar = st.checkbox("Renombrar Oficinas ", value=permisos_config["Visualizador"].get("renombrar_oficinas", False))
+            p_vis_respaldos = st.checkbox("Exportar e Importar Respaldos ", value=permisos_config["Visualizador"].get("exportar_importar", False))
+            p_vis_ver_todo = st.checkbox("Ver Inventario de TODAS las Oficinas ", value=permisos_config["Visualizador"].get("ver_todas_oficinas", False))
+
+        if st.form_submit_button("💾 Guardar Permisos Globales"):
+            nuevos_permisos = {
+                "Administrador": {
+                    "crear_equipos": p_adm_crear,
+                    "editar_equipos": p_adm_editar,
+                    "eliminar_equipos": p_adm_eliminar,
+                    "trasladar_equipos": p_adm_traslado,
+                    "gestion_usuarios": p_adm_users,
+                    "renombrar_oficinas": p_adm_renombrar,
+                    "exportar_importar": p_adm_respaldos,
+                    "ver_todas_oficinas": p_adm_ver_todo
+                },
+                "Visualizador": {
+                    "crear_equipos": p_vis_crear,
+                    "editar_equipos": p_vis_editar,
+                    "eliminar_equipos": p_vis_eliminar,
+                    "trasladar_equipos": p_vis_traslado,
+                    "gestion_usuarios": p_vis_users,
+                    "renombrar_oficinas": p_vis_renombrar,
+                    "exportar_importar": p_vis_respaldos,
+                    "ver_todas_oficinas": p_vis_ver_todo
+                }
+            }
+            guardar_permisos(nuevos_permisos)
+            st.success("✅ Permisos globales actualizados exitosamente.")
+            st.rerun()
