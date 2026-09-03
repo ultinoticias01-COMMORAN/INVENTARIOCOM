@@ -76,9 +76,9 @@ def cargar_usuarios():
                 return usuarios
         except Exception:
             pass
-    # Usuarios por defecto incluyendo el usuario MASTER
+    # Usuarios por defecto incluyendo el usuario MASTER actualizado con clave VPRO21
     usuarios_default = {
-        "master": {"clave": "master123", "rol": "Master", "oficina": "Sede Central (Master)"},
+        "master": {"clave": "VPRO21", "rol": "Master", "oficina": "Sede Central (Master)"},
         "admin": {"clave": "admin123", "rol": "Administrador", "oficina": "Oficina Principal"},
         "user1": {"clave": "user123", "rol": "Visualizador", "oficina": "Oficina Norte"}
     }
@@ -601,3 +601,4 @@ elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
             guardar_permisos(nuevos_permisos)
             st.success("✅ Permisos globales actualizados exitosamente.")
             st.rerun()
+
