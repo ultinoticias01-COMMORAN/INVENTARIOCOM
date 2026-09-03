@@ -185,6 +185,8 @@ if tiene_permiso("crear_equipos"):
     opciones_menu.append("➕ Registrar Nuevo Equipo")
 if tiene_permiso("trasladar_equipos"):
     opciones_menu.append("🚚 Traslados entre Oficinas")
+if tiene_permiso("eliminar_equipos"):
+    opciones_menu.append("🗑️ Eliminación Masiva / Limpieza")
 if tiene_permiso("gestion_usuarios"):
     opciones_menu.append("👥 Gestión de Usuarios")
 if tiene_permiso("renombrar_oficinas"):
@@ -340,18 +342,16 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
                 st.success(f"✅ Equipo registrado en **{oficina_dest}**.")
                 st.rerun()
 
-# 3. TRASLADOS ENTRE OFICINAS Y GENERACIÓN DE CUADRO EXCEL DE ENVÍO
+# 3. TRASLADOS ENTRE OFICINAS
 elif opcion == "🚚 Traslados entre Oficinas" and tiene_permiso("trasladar_equipos"):
     st.subheader("🚚 Traslado de Equipos entre Oficinas con Cuadro de Envío")
     
-    # Definir oficina origen
     if es_master or tiene_permiso("ver_todas_oficinas"):
         oficina_origen = st.selectbox("🏢 Oficina Origen del Traslado:", lista_oficinas)
     else:
         oficina_origen = st.session_state["oficina"]
         st.info(f"Oficina Origen: **{oficina_origen}**")
 
-    # Obtener equipos disponibles en el origen
     df_origen = df[df["OFICINA"].astype(str) == oficina_origen]
     
     if df_origen.empty:
@@ -374,17 +374,14 @@ elif opcion == "🚚 Traslados entre Oficinas" and tiene_permiso("trasladar_equi
             elif not oficina_destino:
                 st.error("⚠️ Debes seleccionar una oficina destino válida.")
             else:
-                # 1. Cambiar oficina en el DataFrame principal
                 df.loc[df["MV"].isin(equipos_a_trasladar), "OFICINA"] = oficina_destino
                 guardar_datos(df)
                 
-                # 2. Generar Excel "Cuadro de Envío / Guía de Traslado"
                 df_trasladados = df_origen[df_origen["MV"].isin(equipos_a_trasladar)].copy()
                 fecha_hoy = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    # Hoja 1: Resumen del Envío
                     df_resumen = pd.DataFrame([
                         {"FECHA DE ENVÍO": fecha_hoy,
                          "OFICINA ORIGEN": oficina_origen,
@@ -394,8 +391,6 @@ elif opcion == "🚚 Traslados entre Oficinas" and tiene_permiso("trasladar_equi
                          "MOTIVO": motivo}
                     ])
                     df_resumen.to_excel(writer, sheet_name="Guía de Envío", index=False)
-                    
-                    # Hoja 2: Detalle de Equipos Trasladados
                     df_trasladados.to_excel(writer, sheet_name="Equipos Detalle", index=False)
                 
                 st.success(f"✅ ¡Traslado completado! **{len(equipos_a_trasladar)} equipo(s)** movidos de **{oficina_origen}** a **{oficina_destino}**.")
@@ -407,7 +402,92 @@ elif opcion == "🚚 Traslados entre Oficinas" and tiene_permiso("trasladar_equi
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
-# 4. GESTIÓN DE USUARIOS
+# 4. ELIMINACIÓN MASIVA / LIMPIEZA DE INVENTARIO
+elif opcion == "🗑️ Eliminación Masiva / Limpieza" and tiene_permiso("eliminar_equipos"):
+    st.subheader("🗑️ Opciones de Eliminación de Inventario")
+    
+    # Determinar visibilidad de oficinas para borrado
+    if es_master or tiene_permiso("ver_todas_oficinas"):
+        oficinas_disponibles = lista_oficinas
+    else:
+        oficinas_disponibles = [st.session_state["oficina"]]
+        st.info(f"🔒 Las acciones de borrado aplicarán únicamente a tu oficina: **{st.session_state['oficina']}**")
+
+    t_sel, t_ofi, t_todo = st.tabs([
+        "🎯 Borrar Equipos Seleccionados", 
+        "🏢 Borrar Inventario por Oficina", 
+        "💥 Borrar Todo el Inventario"
+    ])
+
+    # Tab 1: Borrar Equipos Seleccionados (Multiselección)
+    with t_sel:
+        st.markdown("### 🎯 Eliminar Equipos Específicos")
+        oficina_sel_del = st.selectbox("Selecciona la Oficina:", oficinas_disponibles, key="del_of_sel")
+        df_ofic_sel = df[df["OFICINA"].astype(str) == oficina_sel_del]
+
+        if df_ofic_sel.empty:
+            st.info(f"No hay equipos en **{oficina_sel_del}**.")
+        else:
+            mvs_eliminar = st.multiselect(
+                "Selecciona los equipos que deseas borrar:",
+                options=df_ofic_sel["MV"].tolist(),
+                format_func=lambda x: f"MV: {x} - {df_ofic_sel[df_ofic_sel['MV']==x]['Denominación de objeto técnico'].values[0]}"
+            )
+
+            if st.button("🗑️ Eliminar Equipos Seleccionados", type="primary"):
+                if not mvs_eliminar:
+                    st.error("⚠️ Debes seleccionar al menos un equipo para eliminar.")
+                else:
+                    df = df[~df["MV"].isin(mvs_eliminar)]
+                    guardar_datos(df)
+                    st.success(f"✅ Se han eliminado **{len(mvs_eliminar)} equipo(s)** de la oficina **{oficina_sel_del}**.")
+                    st.rerun()
+
+    # Tab 2: Borrar Todo el Inventario de una Oficina Especifica
+    with t_ofi:
+        st.markdown("### 🏢 Borrar Todo el Inventario de una Oficina")
+        oficina_a_vaciar = st.selectbox("Selecciona la oficina que deseas VACIAR por completo:", oficinas_disponibles, key="vac_ofi")
+        
+        cant_equipos_ofi = len(df[df["OFICINA"].astype(str) == oficina_a_vaciar])
+        st.warning(f"⚠️ La oficina **{oficina_a_vaciar}** actualmente tiene **{cant_equipos_ofi} equipos**.")
+        
+        check_confirm_ofi = st.checkbox(f"Confirmo que deseo ELIMINAR TODOS los {cant_equipos_ofi} equipos de {oficina_a_vaciar}")
+        
+        if st.button(f"🔥 Borrar Todo de {oficina_a_vaciar}", type="primary"):
+            if not check_confirm_ofi:
+                st.error("⚠️ Por seguridad, debes marcar la casilla de verificación antes de proceder.")
+            elif cant_equipos_ofi == 0:
+                st.info("La oficina seleccionada no contiene equipos para eliminar.")
+            else:
+                df = df[df["OFICINA"].astype(str) != oficina_a_vaciar]
+                guardar_datos(df)
+                st.success(f"✅ Se vació por completo el inventario de la oficina **{oficina_a_vaciar}**.")
+                st.rerun()
+
+    # Tab 3: Borrar TODO el Inventario del Sistema
+    with t_todo:
+        st.markdown("### 💥 Borrar TODO el Inventario General")
+        if not (es_master or tiene_permiso("ver_todas_oficinas")):
+            st.error("⚠️ Esta acción solo la puede realizar un usuario **Master** o con permisos globales sobre todas las oficinas.")
+        else:
+            cant_total = len(df)
+            st.error(f"🚨 **¡ATENCIÓN!** Esta acción borrará permanentemente los **{cant_total} equipos** registrados en TODAS las oficinas del sistema.")
+            
+            confirm_texto = st.text_input("Para confirmar, escribe la palabra **ELIMINAR** abajo:")
+            check_confirm_todo = st.checkbox("Entiendo que esta acción borrará TODO el inventario y no se puede deshacer.")
+            
+            if st.button("💥 VACIAR INVENTARIO COMPLETO", type="primary"):
+                if confirm_texto.strip().upper() != "ELIMINAR":
+                    st.error("⚠️ Debes escribir la palabra 'ELIMINAR' para confirmar.")
+                elif not check_confirm_todo:
+                    st.error("⚠️ Debes marcar la casilla de verificación de confirmación.")
+                else:
+                    df = pd.DataFrame(columns=COLUMNAS)
+                    guardar_datos(df)
+                    st.success("✅ Todo el inventario del sistema ha sido eliminado por completo.")
+                    st.rerun()
+
+# 5. GESTIÓN DE USUARIOS
 elif opcion == "👥 Gestión de Usuarios" and tiene_permiso("gestion_usuarios"):
     st.subheader("👥 Administración de Usuarios del Sistema")
     
@@ -485,7 +565,7 @@ elif opcion == "👥 Gestión de Usuarios" and tiene_permiso("gestion_usuarios")
                 st.success(f"✅ Usuario '{u_del}' eliminado.")
                 st.rerun()
 
-# 5. EDITAR NOMBRES DE LAS OFICINAS
+# 6. EDITAR NOMBRES DE LAS OFICINAS
 elif opcion == "🏢 Editar Nombres de Oficinas" and tiene_permiso("renombrar_oficinas"):
     st.subheader("🏢 Edición y Renombrado de Oficinas")
     st.write("Cambia el nombre de una oficina. Se actualizarán automáticamente los usuarios y los equipos asociados.")
@@ -499,25 +579,22 @@ elif opcion == "🏢 Editar Nombres de Oficinas" and tiene_permiso("renombrar_of
         elif nuevo_nombre_oficina in lista_oficinas:
             st.error("⚠️ Ya existe una oficina con ese nombre.")
         else:
-            # 1. Renombrar en usuarios.json
             for u in usuarios_dict:
                 if usuarios_dict[u].get("oficina") == oficina_origen_renombrar:
                     usuarios_dict[u]["oficina"] = nuevo_nombre_oficina
             guardar_usuarios(usuarios_dict)
             
-            # 2. Renombrar en inventario_equipos.xlsx
             if not df.empty:
                 df.loc[df["OFICINA"] == oficina_origen_renombrar, "OFICINA"] = nuevo_nombre_oficina
                 guardar_datos(df)
                 
-            # Update current session if affected
             if st.session_state["oficina"] == oficina_origen_renombrar:
                 st.session_state["oficina"] = nuevo_nombre_oficina
                 
             st.success(f"✅ La oficina **'{oficina_origen_renombrar}'** ha sido renombrada con éxito a **'{nuevo_nombre_oficina}'**.")
             st.rerun()
 
-# 6. IMPORTAR Y EXPORTAR RESPALDOS
+# 7. IMPORTAR Y EXPORTAR RESPALDOS
 elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
     st.subheader("📥 Exportar Respaldo General (Excel)")
     if not df.empty:
@@ -546,7 +623,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
         except Exception as e:
             st.error(f"Error al importar: {e}")
 
-# 7. PANEL MASTER DE CONTROL DE PERMISOS
+# 8. PANEL MASTER DE CONTROL DE PERMISOS
 elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
     st.subheader("⚙️ Panel de Control Master - Gestión Dinámica de Permisos")
     st.write("Configura lo que los roles **Administrador** y **Visualizador** tienen permitido realizar en todo el sistema:")
