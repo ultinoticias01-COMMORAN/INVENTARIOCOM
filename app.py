@@ -299,7 +299,6 @@ if opcion == "📋 Consultar Inventario":
             st.divider()
             st.subheader("⚡ Acciones sobre Equipo Seleccionado")
             
-            # Formato claro de selección
             df_lista = df_mostrar.copy()
             df_lista["display_str"] = df_lista.apply(lambda r: f"MV: '{r['MV']}' | Material: '{r['Material']}' | {r['Denominación de objeto técnico']}", axis=1)
             
@@ -363,15 +362,15 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
     
     c1, c2 = st.columns(2)
     with c1:
-        mv = st.text_input("MV / Identificador (Único o Escaneado)", key="req_mv").strip()
-        material = st.text_input("Material", key="req_material")
-        denominacion_obj = st.text_input("Denominación de objeto técnico", key="req_den_obj")
-        stat_sist = st.text_input("Stat.sist.", key="req_stat_sist")
-        stat_usu = st.text_input("StatUsu", key="req_stat_usu")
+        mv = st.text_input("MV / Identificador (Escaneado u Opcional)", key="req_mv").strip()
+        material = st.text_input("Material", key="req_material").strip()
+        denominacion_obj = st.text_input("Denominación de objeto técnico", key="req_den_obj").strip()
+        stat_sist = st.text_input("Stat.sist.", key="req_stat_sist").strip()
+        stat_usu = st.text_input("StatUsu", key="req_stat_usu").strip()
     with c2:
         estatus_actual = st.selectbox("ESTATUS ACTUAL.", ["Bueno", "Regular", "Malo", "En revisión", "De baja", "Otro"], key="req_estatus")
-        denomin = st.text_input("Denomin.", key="req_denomin")
-        ubicacion = st.text_input("UBICACIÓN ACTUAL", key="req_ubicacion")
+        denomin = st.text_input("Denomin.", key="req_denomin").strip()
+        ubicacion = st.text_input("UBICACIÓN ACTUAL", key="req_ubicacion").strip()
         
         if es_master or tiene_permiso("ver_todas_oficinas"):
             oficina_dest = st.selectbox("🏬 Oficina Asignada:", lista_oficinas, key="req_oficina")
@@ -379,26 +378,35 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
             oficina_dest = st.session_state["oficina"]
             st.info(f"El equipo se asignará a tu oficina: **{oficina_dest}**")
             
-        observaciones = st.text_area("OBSERVACIONES", key="req_obs")
+        observaciones = st.text_area("OBSERVACIONES", key="req_obs").strip()
         
     boton_guardar = st.button("💾 Guardar Equipo", type="primary")
     
     if boton_guardar:
-        if mv and (str(mv) in df["MV"].astype(str).values):
-            st.error(f"⚠️ El código MV '{mv}' ya existe en el inventario.")
+        nuevo_dict = {
+            "MV": str(mv),
+            "Material": str(material),
+            "Denominación de objeto técnico": str(denominacion_obj),
+            "Stat.sist.": str(stat_sist),
+            "StatUsu": str(stat_usu),
+            "ESTATUS ACTUAL.": str(estatus_actual),
+            "Denomin.": str(denomin),
+            "UBICACIÓN ACTUAL": str(ubicacion),
+            "OFICINA": str(oficina_dest),
+            "OBSERVACIONES": str(observaciones)
+        }
+        
+        # Comprobar duplicidad exacta considerando todas las columnas
+        if not df.empty:
+            coincidencias = (df[COLUMNAS] == pd.Series(nuevo_dict)[COLUMNAS]).all(axis=1)
+            es_duplicado_exacto = coincidencias.any()
         else:
-            nuevo_reg = pd.DataFrame([{
-                "MV": str(mv),
-                "Material": str(material),
-                "Denominación de objeto técnico": str(denominacion_obj),
-                "Stat.sist.": str(stat_sist),
-                "StatUsu": str(stat_usu),
-                "ESTATUS ACTUAL.": str(estatus_actual),
-                "Denomin.": str(denomin),
-                "UBICACIÓN ACTUAL": str(ubicacion),
-                "OFICINA": str(oficina_dest),
-                "OBSERVACIONES": str(observaciones)
-            }])
+            es_duplicado_exacto = False
+
+        if es_duplicado_exacto:
+            st.error("⚠️ Error: Ya existe un registro exactamente idéntico en todas sus casillas dentro del sistema.")
+        else:
+            nuevo_reg = pd.DataFrame([nuevo_dict])
             df = pd.concat([df, nuevo_reg], ignore_index=True)
             guardar_datos(df)
             st.success(f"✅ Registro guardado exitosamente en **{oficina_dest}**.")
@@ -422,7 +430,6 @@ elif opcion == "🚚 Traslados entre Oficinas" and tiene_permiso("trasladar_equi
         oficinas_destino_opt = [o for o in lista_oficinas if o != oficina_origen]
         oficina_destino = st.selectbox("🎯 Oficina Destino:", oficinas_destino_opt)
         
-        # Opciones mejor explicadas para multiselect
         opciones_traslado = df_origen.index.tolist()
         
         equipos_idx_trasladar = st.multiselect(
@@ -649,7 +656,7 @@ elif opcion == "🗑️ Eliminación Masiva / Limpieza" and tiene_permiso("elimi
                     st.success("✅ Todo el inventario del sistema ha sido eliminado por completo.")
                     st.rerun()
 
-# 6. GESTIÓN DE USUARIOS (ACTUALIZADO PARA EL MASTER)
+# 6. GESTIÓN DE USUARIOS
 elif opcion == "👥 Gestión de Usuarios" and tiene_permiso("gestion_usuarios"):
     st.subheader("👥 Administración de Usuarios del Sistema")
     
@@ -707,7 +714,6 @@ elif opcion == "👥 Gestión de Usuarios" and tiene_permiso("gestion_usuarios")
             idx_of = lista_oficinas.index(d_act.get("oficina")) if d_act.get("oficina") in lista_oficinas else 0
             n_of = st.selectbox("Oficina Asignada", lista_oficinas, index=idx_of, key="ed_u_of")
         
-        # Opción de Desactivar temporalmente (Master / Admin)
         st.markdown("---")
         estado_usuario = d_act.get("activo", True)
         if u_sel == "master":
@@ -849,7 +855,7 @@ elif opcion == "🏢 Gestión de Oficinas" and tiene_permiso("renombrar_oficinas
                     st.success(f"✅ Oficina **'{oficina_a_borrar}'** eliminada del sistema.")
                     st.rerun()
 
-# 8. IMPORTAR, EXPORTAR Y RESTAURAR RESPALDOS (ACTUALIZADO IMPORTACIÓN CON FILAS SIN MV)
+# 8. IMPORTAR, EXPORTAR Y RESTAURAR RESPALDOS
 elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
     st.subheader("💾 Gestión de Respaldos, Importación y Restauración General")
     
@@ -915,7 +921,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
 
     with t_imp:
         st.subheader("📤 Importar Inventario (Excel)")
-        st.write("Carga un archivo Excel. Se importarán **todas las filas**, incluyendo aquellas que no tengan código MV pero posean Material u otros datos.")
+        st.write("Carga un archivo Excel. Se importarán las filas respetando si tienen datos en otras casillas. **Los registros idénticos exactos serán ignorados** para evitar duplicados.")
         
         if not (es_master or tiene_permiso("ver_todas_oficinas")):
             st.warning(f"🔒 Todos los registros que importes se asignarán de forma automática a tu oficina (**{st.session_state['oficina']}**).")
@@ -925,25 +931,36 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
             try:
                 df_n = pd.read_excel(up_file, dtype=str).fillna("")
                 
-                # Asegurar que tenga las columnas
                 for c in COLUMNAS:
                     if c not in df_n.columns:
                         df_n[c] = ""
                 
                 df_n = df_n[COLUMNAS]
 
-                # Filtrar solo filas verdaderamente vacías en todas sus celdas
-                df_n = df_n[df_n.apply(lambda row: row.str.strip().str.cat().strip() != "", axis=1)]
+                # Filtrar filas verdaderamente vacías en todas sus celdas
+                df_n = df_n[df_n.apply(lambda row: row.astype(str).str.strip().str.cat().strip() != "", axis=1)]
 
                 if not (es_master or tiene_permiso("ver_todas_oficinas")):
                     df_n["OFICINA"] = st.session_state["oficina"]
-                    df_resto = df[df["OFICINA"].astype(str) != st.session_state["oficina"]]
-                    df_final = pd.concat([df_resto, df_n], ignore_index=True)
+                    df_base = df.copy()
                 else:
-                    df_final = pd.concat([df, df_n], ignore_index=True)
+                    df_base = df.copy()
+
+                # Combinar eliminando duplicados idénticos en todas las columnas
+                df_total = pd.concat([df_base, df_n], ignore_index=True)
+                cant_antes = len(df_total)
+                
+                # Eliminar filas donde absolutamente todas las casillas sean idénticas
+                df_final = df_total.drop_duplicates(subset=COLUMNAS, keep="first").reset_index(drop=True)
+                cant_despues = len(df_final)
+                
+                registros_nuevos = cant_despues - len(df_base)
+                duplicados_omitidos = len(df_n) - registros_nuevos
 
                 guardar_datos(df_final)
-                st.success(f"✅ Se han importado correctamente **{len(df_n)} registro(s)**.")
+                st.success(f"✅ Proceso completado: Se importaron **{registros_nuevos} nuevo(s) registro(s)**.")
+                if duplicados_omitidos > 0:
+                    st.info(f"ℹ️ Se omitieron **{duplicados_omitidos} registro(s) duplicados exactos** que ya existían en el sistema.")
                 st.rerun()
             except Exception as e:
                 st.error(f"Error al importar archivo: {e}")
