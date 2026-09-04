@@ -280,15 +280,23 @@ if opcion == "📋 Consultar Inventario":
         if busqueda_exacta:
             mascara = df_view.apply(lambda row: row.astype(str).str.strip().eq(busqueda_exacta), axis=1).any(axis=1)
             df_mostrar = df_view[mascara]
-            if df_mostrar.empty:
-                st.warning(f"⚠️ No se encontró ningún registro exacto para: '{busqueda_exacta}'")
+            cant_hallados = len(df_mostrar)
+            if cant_hallados == 0:
+                st.warning(f"⚠️ No se encontró ningún registro exacto para: **'{busqueda_exacta}'**")
+            else:
+                st.success(f"🔎 Se encontró **{cant_hallados}** registro(s) coincidente(s) exacto(s) para: **'{busqueda_exacta}'**")
         else:
             df_mostrar = df_view
     else:
-        busqueda = st.text_input("🔍 Buscar por MV, Material, Ubicación, Objeto técnico, etc.:")
+        busqueda = st.text_input("🔍 Buscar por MV, Material, Ubicación, Objeto técnico, etc.:").strip()
         if busqueda:
             mascara = df_view.apply(lambda row: row.astype(str).str.contains(busqueda, case=False).any(), axis=1)
             df_mostrar = df_view[mascara]
+            cant_hallados = len(df_mostrar)
+            if cant_hallados == 0:
+                st.warning(f"⚠️ No se encontraron resultados para la búsqueda: **'{busqueda}'**")
+            else:
+                st.info(f"🔎 Se encontraron **{cant_hallados}** registro(s) que coinciden con: **'{busqueda}'**")
         else:
             df_mostrar = df_view
 
