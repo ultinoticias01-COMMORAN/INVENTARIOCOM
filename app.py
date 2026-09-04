@@ -116,14 +116,21 @@ def validar_duplicidad_lote(df_lote, df_existente=None, index_ignore=None):
 def procesar_importacion_upsert(df_lote, df_base, oficina_sesion, es_admin_global):
     """
     Procesa la importación masiva permitiendo actualizar registros al coincidir MV o Material.
+    Omitirá cualquier registro que no contenga el campo MV obligatorio.
     """
     df_db = df_base.copy()
     agregados = 0
     actualizados = 0
+    ignorados_sin_mv = 0
 
     for _, row in df_lote.iterrows():
         mv_val = str(row.get("MV", "")).strip()
         material_val = str(row.get("Material", "")).strip()
+
+        # RESTRICCIÓN: Si no tiene MV, se ignora completamente el registro
+        if not mv_val:
+            ignorados_sin_mv += 1
+            continue
 
         oficina_asignada = str(row.get("OFICINA", "")).strip() if es_admin_global else oficina_sesion
         if not oficina_asignada:
@@ -131,17 +138,16 @@ def procesar_importacion_upsert(df_lote, df_base, oficina_sesion, es_admin_globa
 
         coincidencia_idx = None
         
-        if mv_val or material_val:
-            mask = pd.Series([False] * len(df_db), index=df_db.index)
-            
-            if mv_val:
-                mask = mask | (df_db["MV"].astype(str).str.strip() == mv_val)
-            if material_val:
-                mask = mask | (df_db["Material"].astype(str).str.strip() == material_val)
+        mask = pd.Series([False] * len(df_db), index=df_db.index)
+        
+        if mv_val:
+            mask = mask | (df_db["MV"].astype(str).str.strip() == mv_val)
+        if material_val:
+            mask = mask | (df_db["Material"].astype(str).str.strip() == material_val)
 
-            indices = df_db[mask].index
-            if not indices.empty:
-                coincidencia_idx = indices[0]
+        indices = df_db[mask].index
+        if not indices.empty:
+            coincidencia_idx = indices[0]
 
         if coincidencia_idx is not None:
             # Actualizar registro existente
@@ -162,7 +168,7 @@ def procesar_importacion_upsert(df_lote, df_base, oficina_sesion, es_admin_globa
             df_db = pd.concat([df_db, pd.DataFrame([nueva_fila])], ignore_index=True)
             agregados += 1
 
-    return df_db, agregados, actualizados
+    return df_db, agregados, actualizados, ignorados_sin_mv
 
 # --- FUNCIONES DE PERSISTENCIA ---
 def cargar_permisos():
@@ -378,7 +384,7 @@ if opcion == "📋 Consultar Inventario":
     else:
         busqueda = st.text_input("🔍 Buscar por MV, Material, Ubicación, Objeto técnico, etc.:").strip()
         if busqueda:
-            mascara = df_view.apply(lambda row: row.astype(str).str.contains(busqueda, case=False).any(), axis=1)
+            mascara = df_view.apply(lambda row: row.astype(str).contains(busqueda, case=False).any(), axis=1)
             df_mostrar = df_view[mascara]
             cant_hallados = len(df_mostrar)
             if cant_hallados == 0:
@@ -415,7 +421,7 @@ if opcion == "📋 Consultar Inventario":
                     with tabs[0]:
                         c1, c2 = st.columns(2)
                         with c1:
-                            mv_e = st.text_input("MV", value=str(registro["MV"]), key="edit_mv").strip()
+                            mv_e = st.text_input("MV (Obligatorio)", value=str(registro["MV"]), key="edit_mv").strip()
                             mat_e = st.text_input("Material", value=str(registro["Material"]), key="edit_mat").strip()
                             den_obj_e = st.text_input("Denominación Objeto Técnico", value=str(registro["Denominación de objeto técnico"]), key="edit_den_obj")
                             stat_s_e = st.text_input("Stat.sist.", value=str(registro["Stat.sist."]), key="edit_stat_s")
@@ -427,25 +433,28 @@ if opcion == "📋 Consultar Inventario":
                             obs_e = st.text_area("OBSERVACIONES", value=str(registro["OBSERVACIONES"]), key="edit_obs")
                             
                         if st.button("💾 Guardar Cambios"):
-                            df_edit_temp = pd.DataFrame([{"MV": mv_e, "Material": mat_e}])
-                            
-                            es_valido, msj_err = validar_duplicidad_lote(df_edit_temp, df_existente=df, index_ignore=reg_idx)
-                            
-                            if not es_valido:
-                                st.error(f"⚠️ {msj_err}")
+                            if not mv_e:
+                                st.error("⚠️ El campo 'MV' es obligatorio. No puedes guardar sin un valor de MV.")
                             else:
-                                df.loc[reg_idx, "MV"] = str(mv_e)
-                                df.loc[reg_idx, "Material"] = str(mat_e)
-                                df.loc[reg_idx, "Denominación de objeto técnico"] = str(den_obj_e)
-                                df.loc[reg_idx, "Stat.sist."] = str(stat_s_e)
-                                df.loc[reg_idx, "StatUsu"] = str(stat_u_e)
-                                df.loc[reg_idx, "ESTATUS ACTUAL."] = str(est_e)
-                                df.loc[reg_idx, "Denomin."] = str(den_e)
-                                df.loc[reg_idx, "UBICACIÓN ACTUAL"] = str(ubi_e)
-                                df.loc[reg_idx, "OBSERVACIONES"] = str(obs_e)
-                                guardar_datos(df)
-                                st.success("✅ Equipo actualizado correctamente.")
-                                st.rerun()
+                                df_edit_temp = pd.DataFrame([{"MV": mv_e, "Material": mat_e}])
+                                
+                                es_valido, msj_err = validar_duplicidad_lote(df_edit_temp, df_existente=df, index_ignore=reg_idx)
+                                
+                                if not es_valido:
+                                    st.error(f"⚠️ {msj_err}")
+                                else:
+                                    df.loc[reg_idx, "MV"] = str(mv_e)
+                                    df.loc[reg_idx, "Material"] = str(mat_e)
+                                    df.loc[reg_idx, "Denominación de objeto técnico"] = str(den_obj_e)
+                                    df.loc[reg_idx, "Stat.sist."] = str(stat_s_e)
+                                    df.loc[reg_idx, "StatUsu"] = str(stat_u_e)
+                                    df.loc[reg_idx, "ESTATUS ACTUAL."] = str(est_e)
+                                    df.loc[reg_idx, "Denomin."] = str(den_e)
+                                    df.loc[reg_idx, "UBICACIÓN ACTUAL"] = str(ubi_e)
+                                    df.loc[reg_idx, "OBSERVACIONES"] = str(obs_e)
+                                    guardar_datos(df)
+                                    st.success("✅ Equipo actualizado correctamente.")
+                                    st.rerun()
 
                 if tiene_permiso("eliminar_equipos"):
                     idx_tab_del = 1 if tiene_permiso("editar_equipos") else 0
@@ -465,7 +474,7 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
     
     c1, c2 = st.columns(2)
     with c1:
-        mv = st.text_input("MV / Identificador (Escaneado u Opcional)", key="req_mv").strip()
+        mv = st.text_input("MV / Identificador (OBLIGATORIO)", key="req_mv").strip()
         material = st.text_input("Material", key="req_material").strip()
         denominacion_obj = st.text_input("Denominación de objeto técnico", key="req_den_obj").strip()
         stat_sist = st.text_input("Stat.sist.", key="req_stat_sist").strip()
@@ -486,30 +495,33 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
     boton_guardar = st.button("💾 Guardar Equipo", type="primary")
     
     if boton_guardar:
-        nuevo_dict = {
-            "MV": str(mv),
-            "Material": str(material),
-            "Denominación de objeto técnico": str(denominacion_obj),
-            "Stat.sist.": str(stat_sist),
-            "StatUsu": str(stat_usu),
-            "ESTATUS ACTUAL.": str(estatus_actual),
-            "Denomin.": str(denomin),
-            "UBICACIÓN ACTUAL": str(ubicacion),
-            "OFICINA": str(oficina_dest),
-            "OBSERVACIONES": str(observaciones)
-        }
-        
-        df_nuevo_temp = pd.DataFrame([nuevo_dict])
-        es_valido, msj_err = validar_duplicidad_lote(df_nuevo_temp, df_existente=df)
-
-        if not es_valido:
-            st.error(f"⚠️ {msj_err}")
+        if not mv:
+            st.error("⚠️ **Acción denegada:** El campo **MV** es estrictamente OBLIGATORIO para crear un equipo.")
         else:
-            nuevo_reg = pd.DataFrame([nuevo_dict])
-            df = pd.concat([df, nuevo_reg], ignore_index=True)
-            guardar_datos(df)
-            st.success(f"✅ Registro guardado exitosamente en **{oficina_dest}**.")
-            st.rerun()
+            nuevo_dict = {
+                "MV": str(mv),
+                "Material": str(material),
+                "Denominación de objeto técnico": str(denominacion_obj),
+                "Stat.sist.": str(stat_sist),
+                "StatUsu": str(stat_usu),
+                "ESTATUS ACTUAL.": str(estatus_actual),
+                "Denomin.": str(denomin),
+                "UBICACIÓN ACTUAL": str(ubicacion),
+                "OFICINA": str(oficina_dest),
+                "OBSERVACIONES": str(observaciones)
+            }
+            
+            df_nuevo_temp = pd.DataFrame([nuevo_dict])
+            es_valido, msj_err = validar_duplicidad_lote(df_nuevo_temp, df_existente=df)
+
+            if not es_valido:
+                st.error(f"⚠️ {msj_err}")
+            else:
+                nuevo_reg = pd.DataFrame([nuevo_dict])
+                df = pd.concat([df, nuevo_reg], ignore_index=True)
+                guardar_datos(df)
+                st.success(f"✅ Registro guardado exitosamente en **{oficina_dest}**.")
+                st.rerun()
 
 # 3. TRASLADOS ENTRE OFICINAS
 elif opcion == "🚚 Traslados entre Oficinas" and tiene_permiso("trasladar_equipos"):
@@ -1020,8 +1032,9 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
 
     with t_imp:
         st.subheader("📤 Importar / Actualizar Inventario (Excel)")
-        st.write("Carga un archivo Excel. Si un registro coincide por **MV** o **Material**, el sistema **actualizará los datos restantes** del equipo. Si no coincide, se creará un registro nuevo.")
-        
+        st.write("Carga un archivo Excel. Si un registro coincide por **MV** o **Material**, el sistema **actualización los datos**. Si no coincide, se creará un registro nuevo.")
+        st.info("⚠️ **Nota:** Todo registro en el archivo que **no posea MV** será omitido automáticamente.")
+
         es_admin_global = (es_master or tiene_permiso("ver_todas_oficinas"))
         
         if not es_admin_global:
@@ -1044,7 +1057,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                 if df_n.empty:
                     st.warning("⚠️ El archivo subido no contiene registros válidos.")
                 else:
-                    df_final, cant_agregados, cant_actualizados = procesar_importacion_upsert(
+                    df_final, cant_agregados, cant_actualizados, cant_ignorados = procesar_importacion_upsert(
                         df_lote=df_n,
                         df_base=df,
                         oficina_sesion=st.session_state["oficina"],
@@ -1054,9 +1067,10 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                     guardar_datos(df_final)
                     
                     st.success(
-                        f"✅ **Proceso completado con éxito:**\n\n"
+                        f"✅ **Proceso completado:**\n\n"
                         f"- 🔄 **Equipos actualizados:** {cant_actualizados}\n"
-                        f"- ➕ **Equipos nuevos agregados:** {cant_agregados}"
+                        f"- ➕ **Equipos nuevos agregados:** {cant_agregados}\n"
+                        f"- ⚠️ **Registros omitidos (por carecer de MV):** {cant_ignorados}"
                     )
                     st.rerun()
 
