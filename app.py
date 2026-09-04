@@ -342,10 +342,11 @@ if opcion == "📋 Consultar Inventario":
 elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
     st.subheader("➕ Registrar Nuevo Equipo")
     
-    with st.form("form_agregar"):
+    # Formulario encapsulado: Nada se guarda hasta presionar "Guardar Equipo"
+    with st.form("form_agregar_equipo", clear_on_submit=True):
         c1, c2 = st.columns(2)
         with c1:
-            mv = st.text_input("MV / Identificador (Único o Escaneado)")
+            mv = st.text_input("MV / Identificador (Único o Escaneado)").strip()
             material = st.text_input("Material")
             denominacion_obj = st.text_input("Denominación de objeto técnico")
             stat_sist = st.text_input("Stat.sist.")
@@ -363,11 +364,13 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
                 
             observaciones = st.text_area("OBSERVACIONES")
             
-        if st.form_submit_button("Guardar Equipo"):
+        boton_guardar = st.form_submit_button("💾 Guardar Equipo", type="primary")
+        
+        if boton_guardar:
             if not mv:
-                st.error("⚠️ El campo 'MV' es obligatorio.")
+                st.error("⚠️ El campo 'MV' es obligatorio para poder guardar.")
             elif str(mv) in df["MV"].astype(str).values:
-                st.error(f"⚠️ El código MV '{mv}' ya existe.")
+                st.error(f"⚠️ El código MV '{mv}' ya existe en el inventario.")
             else:
                 nuevo_reg = pd.DataFrame([{
                     "MV": str(mv),
@@ -383,7 +386,7 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
                 }])
                 df = pd.concat([df, nuevo_reg], ignore_index=True)
                 guardar_datos(df)
-                st.success(f"✅ Equipo registrado en **{oficina_dest}**.")
+                st.success(f"✅ Equipo '{mv}' registrado exitosamente en **{oficina_dest}**.")
                 st.rerun()
 
 # 3. TRASLADOS ENTRE OFICINAS
@@ -949,7 +952,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                         dict_p_rest = df_p_rest.set_index(df_p_rest.columns[0]).to_dict()
                         guardar_permisos(dict_p_rest)
 
-                    st.success("✅ ¡El sistema ha sido restaurado exitosamente a partir del respaldo general!")
+                    st.success("✅ ¡El sistema ha sido restored exitosamente a partir del respaldo general!")
                     st.rerun()
 
                 except Exception as e:
