@@ -446,7 +446,7 @@ elif opcion == "🚚 Traslados entre Oficinas" and tiene_permiso("trasladar_equi
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
-# 4. MÓDULO DE AUDITORÍAS (NUEVO)
+# 4. MÓDULO DE AUDITORÍAS
 elif opcion == "📋 Módulo de Auditorías" and tiene_permiso("auditorias"):
     st.subheader("📋 Auditoría de Inventario Físico / Escaneo por Pistola")
     
@@ -485,7 +485,6 @@ elif opcion == "📋 Módulo de Auditorías" and tiene_permiso("auditorias"):
 
     st.divider()
     
-    # Campo para escaneo por pistola
     with st.form("form_escaneo_audit", clear_on_submit=True):
         codigo_escaneado = st.text_input("🔫 Escanea o escribe el Código (MV) del equipo hallado:").strip()
         submit_escaneo = st.form_submit_button("➕ Registrar Hallazgo")
@@ -499,7 +498,6 @@ elif opcion == "📋 Módulo de Auditorías" and tiene_permiso("auditorias"):
             else:
                 st.warning(f"⚠️ El código '{codigo_escaneado}' ya fue registrado en esta auditoría.")
 
-    # ANÁLISIS DE RESULTADOS DE AUDITORÍA
     df_oficina_sis = df[df["OFICINA"].astype(str) == oficina_audit]
     mvs_sistema = set(df_oficina_sis["MV"].astype(str).tolist())
     mvs_escaneados = set(datos_audit["escaneados"])
@@ -536,7 +534,6 @@ elif opcion == "📋 Módulo de Auditorías" and tiene_permiso("auditorias"):
         else:
             st.info("No hay equipos no registrados escaneados.")
 
-    # EXPORTAR INFORME DE AUDITORÍA
     st.divider()
     output_audit = io.BytesIO()
     with pd.ExcelWriter(output_audit, engine='openpyxl') as writer:
@@ -816,14 +813,15 @@ elif opcion == "🏢 Gestión de Oficinas" and tiene_permiso("renombrar_oficinas
                     st.success(f"✅ Oficina **'{oficina_a_borrar}'** eliminada del sistema.")
                     st.rerun()
 
-# 8. IMPORTAR Y EXPORTAR RESPALDOS (NUEVA RESPALDO GENERAL COMPLETO)
+# 8. IMPORTAR, EXPORTAR Y RESTAURAR RESPALDOS
 elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
-    st.subheader("💾 Gestión de Respaldos e Importación")
+    st.subheader("💾 Gestión de Respaldos, Importación y Restauración General")
     
-    t_resp_inv, t_resp_gen, t_imp = st.tabs([
+    t_resp_inv, t_resp_gen, t_imp, t_rest_gen = st.tabs([
         "📄 Respaldo de Inventario (Excel)", 
         "🌐 RESPALDO GENERAL DEL SISTEMA", 
-        "📤 Importar Inventario (Excel)"
+        "📤 Importar Inventario",
+        "🔄 RESTAURACIÓN GENERAL DEL SISTEMA"
     ])
 
     with t_resp_inv:
@@ -857,7 +855,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                 df.to_excel(writer, index=False, sheet_name="Inventario_Total")
                 
                 df_u_resp = pd.DataFrame([
-                    {"Usuario": u, "Rol": d["rol"], "Oficina": d.get("oficina", "Sin Oficina")}
+                    {"Usuario": u, "Rol": d["rol"], "Oficina": d.get("oficina", "Sin Oficina"), "Clave": d.get("clave", "")}
                     for u, d in cargar_usuarios().items()
                 ])
                 df_u_resp.to_excel(writer, index=False, sheet_name="Usuarios")
@@ -874,12 +872,12 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
             )
 
     with t_imp:
-        st.subheader("📤 Importar Respaldo (Excel)")
+        st.subheader("📤 Importar Inventario (Excel)")
         if not (es_master or tiene_permiso("ver_todas_oficinas")):
             st.warning(f"🔒 Todos los equipos que importes se asignarán de forma automática a tu oficina (**{st.session_state['oficina']}**).")
 
-        up_file = st.file_uploader("Cargar Excel", type=["xlsx", "xls"])
-        if up_file and st.button("Procesar e Importar"):
+        up_file = st.file_uploader("Cargar Excel de Inventario", type=["xlsx", "xls"], key="up_inv_only")
+        if up_file and st.button("Procesar e Importar Inventario"):
             try:
                 df_n = pd.read_excel(up_file, dtype=str).fillna("")
                 for c in COLUMNAS:
@@ -899,6 +897,63 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                 st.rerun()
             except Exception as e:
                 st.error(f"Error al importar: {e}")
+
+    with t_rest_gen:
+        st.markdown("### 🔄 Restauración General del Sistema")
+        st.error("🚨 **ADVERTENCIA:** Restaurar el sistema sobrescribirá el Inventario, la lista de Usuarios, las Oficinas y los Permisos por los contenidos en el archivo de Respaldo General.")
+        
+        file_restaurar = st.file_uploader("Selecciona el archivo de Respaldo General Completo (.xlsx):", type=["xlsx"], key="up_restauracion_gen")
+        confirm_restaurar = st.checkbox("Entiendo que esta acción reemplazará la configuración y datos actuales del sistema.")
+
+        if st.button("🔥 Restaurar Todo el Sistema", type="primary"):
+            if not file_restaurar:
+                st.error("⚠️ Debes seleccionar un archivo `.xlsx` de Respaldo General válido.")
+            elif not confirm_restaurar:
+                st.error("⚠️ Debes confirmar marcando la casilla antes de restaurar.")
+            else:
+                try:
+                    xls = pd.ExcelFile(file_restaurar)
+                    hojas = xls.sheet_names
+                    
+                    # 1. Restaurar Inventario
+                    if "Inventario_Total" in hojas:
+                        df_rest = pd.read_excel(xls, sheet_name="Inventario_Total", dtype=str).fillna("")
+                        for c in COLUMNAS:
+                            if c not in df_rest.columns:
+                                df_rest[c] = ""
+                        guardar_datos(df_rest[COLUMNAS])
+                    
+                    # 2. Restaurar Usuarios
+                    if "Usuarios" in hojas:
+                        df_u_rest = pd.read_excel(xls, sheet_name="Usuarios", dtype=str).fillna("")
+                        dict_u_rest = {}
+                        for _, row in df_u_rest.iterrows():
+                            dict_u_rest[str(row["Usuario"])] = {
+                                "clave": str(row.get("Clave", "1234")),
+                                "rol": str(row.get("Rol", "Visualizador")),
+                                "oficina": str(row.get("Oficina", "Oficina Principal"))
+                            }
+                        if "master" not in dict_u_rest:
+                            dict_u_rest["master"] = {"clave": "VPRO21", "rol": "Master", "oficina": "Sede Central (Master)"}
+                        guardar_usuarios(dict_u_rest)
+
+                    # 3. Restaurar Oficinas
+                    if "Oficinas" in hojas:
+                        df_of_rest = pd.read_excel(xls, sheet_name="Oficinas", dtype=str).fillna("")
+                        lista_of_rest = df_of_rest["Oficinas"].dropna().tolist()
+                        guardar_oficinas(lista_of_rest)
+
+                    # 4. Restaurar Permisos
+                    if "Permisos" in hojas:
+                        df_p_rest = pd.read_excel(xls, sheet_name="Permisos")
+                        dict_p_rest = df_p_rest.set_index(df_p_rest.columns[0]).to_dict()
+                        guardar_permisos(dict_p_rest)
+
+                    st.success("✅ ¡El sistema ha sido restaurado exitosamente a partir del respaldo general!")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"❌ Error al procesar la restauración general: {e}")
 
 # 9. PANEL MASTER DE CONTROL DE PERMISOS
 elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
