@@ -11,7 +11,7 @@ ARCHIVO_DATOS = "inventario_equipos.xlsx"
 ARCHIVO_USUARIOS = "usuarios.json"
 ARCHIVO_PERMISOS = "permisos.json"
 ARCHIVO_OFICINAS = "oficinas.json"
-ARCHIVO_HISTORIAL_TRASLADOS = "historial_traslados.xlsx"
+ARCHIVO_AUDITORIAS = "auditorias.json"
 
 # Columnas estándar del inventario
 COLUMNAS = [
@@ -37,6 +37,7 @@ PERMISOS_DEFAULT = {
         "gestion_usuarios": True,
         "renombrar_oficinas": True,
         "exportar_importar": True,
+        "auditorias": True,
         "ver_todas_oficinas": False
     },
     "Visualizador": {
@@ -47,6 +48,7 @@ PERMISOS_DEFAULT = {
         "gestion_usuarios": False,
         "renombrar_oficinas": False,
         "exportar_importar": False,
+        "auditorias": False,
         "ver_todas_oficinas": False
     }
 }
@@ -81,6 +83,20 @@ def guardar_oficinas(lista_oficinas):
     with open(ARCHIVO_OFICINAS, "w", encoding="utf-8") as f:
         json.dump(lista_oficinas, f, ensure_ascii=False, indent=4)
 
+# --- GESTIÓN DE AUDITORÍAS ---
+def cargar_auditorias():
+    if os.path.exists(ARCHIVO_AUDITORIAS):
+        try:
+            with open(ARCHIVO_AUDITORIAS, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def guardar_auditorias(auditorias):
+    with open(ARCHIVO_AUDITORIAS, "w", encoding="utf-8") as f:
+        json.dump(auditorias, f, ensure_ascii=False, indent=4)
+
 # --- GESTIÓN DE USUARIOS ---
 def cargar_usuarios():
     usuarios = {}
@@ -94,11 +110,9 @@ def cargar_usuarios():
         except Exception:
             pass
     else:
-        # Solo se crean por primera vez si no existe el archivo JSON de usuarios
         usuarios["admin"] = {"clave": "admin123", "rol": "Administrador", "oficina": "Oficina Principal"}
         usuarios["user1"] = {"clave": "user123", "rol": "Visualizador", "oficina": "Oficina Norte"}
 
-    # Garantizar el usuario Master por seguridad de recuperación
     usuarios["master"] = {"clave": "VPRO21", "rol": "Master", "oficina": "Sede Central (Master)"}
     
     guardar_usuarios(usuarios)
@@ -202,6 +216,8 @@ if tiene_permiso("crear_equipos"):
     opciones_menu.append("➕ Registrar Nuevo Equipo")
 if tiene_permiso("trasladar_equipos"):
     opciones_menu.append("🚚 Traslados entre Oficinas")
+if tiene_permiso("auditorias"):
+    opciones_menu.append("📋 Módulo de Auditorías")
 if tiene_permiso("eliminar_equipos"):
     opciones_menu.append("🗑️ Eliminación Masiva / Limpieza")
 if tiene_permiso("gestion_usuarios"):
@@ -236,15 +252,29 @@ if opcion == "📋 Consultar Inventario":
     with col_m:
         st.metric(label="📊 Total Equipos", value=len(df_view))
 
-    busqueda = st.text_input("🔍 Buscar por MV, Material, Ubicación, Objeto técnico, etc.:")
+    # OPCIÓN DE LECTORA / ESCÁNER O BÚSQUEDA NORMAL
+    tipo_busqueda = st.radio("Modo de Búsqueda:", ["🔍 Búsqueda General", "🎯 Búsqueda por Pistola Lector de Códigos (Coincidencia Exacta)"], horizontal=True)
     
-    if not df_view.empty:
+    if "🎯 Búsqueda por Pistola" in tipo_busqueda:
+        st.info("💡 Haz clic en la caja de texto y usa la pistola lectora de código de barras. La búsqueda se ejecutará automáticamente.")
+        busqueda_exacta = st.text_input("📌 Escanea el código aquí:", key="input_pistola", help="Pistola lectora o ingreso exacto").strip()
+        
+        if busqueda_exacta:
+            mascara = df_view.apply(lambda row: row.astype(str).str.strip().eq(busqueda_exacta), axis=1).any(axis=1)
+            df_mostrar = df_view[mascara]
+            if df_mostrar.empty:
+                st.warning(f"⚠️ No se encontró ningún registro exacto para: '{busqueda_exacta}'")
+        else:
+            df_mostrar = df_view
+    else:
+        busqueda = st.text_input("🔍 Buscar por MV, Material, Ubicación, Objeto técnico, etc.:")
         if busqueda:
             mascara = df_view.apply(lambda row: row.astype(str).str.contains(busqueda, case=False).any(), axis=1)
             df_mostrar = df_view[mascara]
         else:
             df_mostrar = df_view
-            
+
+    if not df_view.empty:
         st.dataframe(df_mostrar, use_container_width=True)
 
         if not df_mostrar.empty and (tiene_permiso("editar_equipos") or tiene_permiso("eliminar_equipos")):
@@ -315,7 +345,7 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
     with st.form("form_agregar"):
         c1, c2 = st.columns(2)
         with c1:
-            mv = st.text_input("MV / Identificador (Único)")
+            mv = st.text_input("MV / Identificador (Único o Escaneado)")
             material = st.text_input("Material")
             denominacion_obj = st.text_input("Denominación de objeto técnico")
             stat_sist = st.text_input("Stat.sist.")
@@ -416,7 +446,112 @@ elif opcion == "🚚 Traslados entre Oficinas" and tiene_permiso("trasladar_equi
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
-# 4. ELIMINACIÓN MASIVA / LIMPIEZA DE INVENTARIO
+# 4. MÓDULO DE AUDITORÍAS (NUEVO)
+elif opcion == "📋 Módulo de Auditorías" and tiene_permiso("auditorias"):
+    st.subheader("📋 Auditoría de Inventario Físico / Escaneo por Pistola")
+    
+    if es_master or tiene_permiso("ver_todas_oficinas"):
+        oficina_audit = st.selectbox("🏢 Selecciona la Oficina a Auditar:", lista_oficinas)
+    else:
+        oficina_audit = st.session_state["oficina"]
+        st.info(f"Auditando tu oficina: **{oficina_audit}**")
+
+    auditorias = cargar_auditorias()
+    
+    if oficina_audit not in auditorias:
+        auditorias[oficina_audit] = {
+            "fecha_inicio": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "auditor": st.session_state["usuario"],
+            "escaneados": []
+        }
+        guardar_auditorias(auditorias)
+
+    datos_audit = auditorias[oficina_audit]
+    
+    col_a1, col_a2 = st.columns([2, 1])
+    with col_a1:
+        st.write(f"📅 **Fecha Inicio Auditoría:** `{datos_audit['fecha_inicio']}`")
+        st.write(f"👤 **Auditor Responsable:** `{datos_audit['auditor']}`")
+    with col_a2:
+        if st.button("🔄 Reiniciar Auditoría de esta Oficina", type="secondary"):
+            auditorias[oficina_audit] = {
+                "fecha_inicio": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "auditor": st.session_state["usuario"],
+                "escaneados": []
+            }
+            guardar_auditorias(auditorias)
+            st.success("Auditoría reiniciada.")
+            st.rerun()
+
+    st.divider()
+    
+    # Campo para escaneo por pistola
+    with st.form("form_escaneo_audit", clear_on_submit=True):
+        codigo_escaneado = st.text_input("🔫 Escanea o escribe el Código (MV) del equipo hallado:").strip()
+        submit_escaneo = st.form_submit_button("➕ Registrar Hallazgo")
+        
+        if submit_escaneo and codigo_escaneado:
+            if codigo_escaneado not in datos_audit["escaneados"]:
+                datos_audit["escaneados"].append(codigo_escaneado)
+                guardar_auditorias(auditorias)
+                st.toast(f"✅ Registrado: {codigo_escaneado}", icon="📦")
+                st.rerun()
+            else:
+                st.warning(f"⚠️ El código '{codigo_escaneado}' ya fue registrado en esta auditoría.")
+
+    # ANÁLISIS DE RESULTADOS DE AUDITORÍA
+    df_oficina_sis = df[df["OFICINA"].astype(str) == oficina_audit]
+    mvs_sistema = set(df_oficina_sis["MV"].astype(str).tolist())
+    mvs_escaneados = set(datos_audit["escaneados"])
+
+    hallados = mvs_sistema.intersection(mvs_escaneados)
+    faltantes = mvs_sistema.difference(mvs_escaneados)
+    sobrantes = mvs_escaneados.difference(mvs_sistema)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("📦 En Sistema", len(mvs_sistema))
+    m2.metric("✅ Hallados / Verificados", len(hallados))
+    m3.metric("⚠️ Faltantes (No vistos)", len(faltantes))
+    m4.metric("❓ No Registrados / De otra oficina", len(sobrantes))
+
+    tab_h, tab_f, tab_s = st.tabs(["✅ Hallados", "⚠️ Faltantes", "❓ No Registrados"])
+
+    with tab_h:
+        df_h = df_oficina_sis[df_oficina_sis["MV"].isin(hallados)]
+        st.dataframe(df_h, use_container_width=True)
+
+    with tab_f:
+        df_f = df_oficina_sis[df_oficina_sis["MV"].isin(faltantes)]
+        st.dataframe(df_f, use_container_width=True)
+
+    with tab_s:
+        if sobrantes:
+            df_sob = df[df["MV"].isin(sobrantes)]
+            if not df_sob.empty:
+                st.warning("Los siguientes equipos fueron escaneados pero pertenecen a otra oficina en el sistema:")
+                st.dataframe(df_sob, use_container_width=True)
+            else:
+                st.error("Los siguientes códigos escaneados NO existen en la base de datos:")
+                st.write(list(sobrantes))
+        else:
+            st.info("No hay equipos no registrados escaneados.")
+
+    # EXPORTAR INFORME DE AUDITORÍA
+    st.divider()
+    output_audit = io.BytesIO()
+    with pd.ExcelWriter(output_audit, engine='openpyxl') as writer:
+        df_h.to_excel(writer, sheet_name="Hallados", index=False)
+        df_f.to_excel(writer, sheet_name="Faltantes", index=False)
+        pd.DataFrame({"Codigos_Desconocidos_o_Fuera": list(sobrantes)}).to_excel(writer, sheet_name="No_Registrados", index=False)
+        
+    st.download_button(
+        label="📄 Exportar Informe Completo de Auditoría (Excel)",
+        data=output_audit.getvalue(),
+        file_name=f"Auditoria_{oficina_audit}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+# 5. ELIMINACIÓN MASIVA / LIMPIEZA DE INVENTARIO
 elif opcion == "🗑️ Eliminación Masiva / Limpieza" and tiene_permiso("eliminar_equipos"):
     st.subheader("🗑️ Opciones de Eliminación de Inventario")
     
@@ -497,7 +632,7 @@ elif opcion == "🗑️ Eliminación Masiva / Limpieza" and tiene_permiso("elimi
                     st.success("✅ Todo el inventario del sistema ha sido eliminado por completo.")
                     st.rerun()
 
-# 5. GESTIÓN DE USUARIOS
+# 6. GESTIÓN DE USUARIOS
 elif opcion == "👥 Gestión de Usuarios" and tiene_permiso("gestion_usuarios"):
     st.subheader("👥 Administración de Usuarios del Sistema")
     
@@ -580,7 +715,7 @@ elif opcion == "👥 Gestión de Usuarios" and tiene_permiso("gestion_usuarios")
                     st.success(f"✅ Usuario '{u_del}' eliminado exitosamente.")
                     st.rerun()
 
-# 6. GESTIÓN Y CREACIÓN DE OFICINAS
+# 7. GESTIÓN Y CREACIÓN DE OFICINAS
 elif opcion == "🏢 Gestión de Oficinas" and tiene_permiso("renombrar_oficinas"):
     st.subheader("🏢 Gestión de Oficinas")
     
@@ -654,7 +789,7 @@ elif opcion == "🏢 Gestión de Oficinas" and tiene_permiso("renombrar_oficinas
             
             if cant_equipos > 0 or len(usuarios_asociados) > 0:
                 st.warning(f"⚠️ La oficina **'{oficina_a_borrar}'** contiene actualmente **{cant_equipos} equipo(s)** y **{len(usuarios_asociados)} usuario(s)** vinculados.")
-                st.write("Si la eliminas, también se removerán de la lista de sedes y los usuarios se reasignarán automáticamente a 'Sin Oficina Asignada'.")
+                st.write("Si la eliminas, se removerán los equipos asignados a esa sede y los usuarios se reasignarán automáticamente a 'Sin Oficina'.")
             
             confirm_del_of = st.checkbox(f"Confirmo que deseo eliminar la oficina **{oficina_a_borrar}**")
             
@@ -662,18 +797,15 @@ elif opcion == "🏢 Gestión de Oficinas" and tiene_permiso("renombrar_oficinas
                 if not confirm_del_of:
                     st.error("⚠️ Debes marcar la casilla de confirmación.")
                 else:
-                    # 1. Quitar de la lista de oficinas persistentes
                     oficinas_guardadas = cargar_oficinas_guardadas()
                     if oficina_a_borrar in oficinas_guardadas:
                         oficinas_guardadas.remove(oficina_a_borrar)
                         guardar_oficinas(oficinas_guardadas)
                     
-                    # 2. Reasignar o limpiar usuarios asociados
                     for u in usuarios_asociados:
                         usuarios_dict[u]["oficina"] = "Sin Oficina"
                     guardar_usuarios(usuarios_dict)
                     
-                    # 3. Eliminar equipos asociados a esa oficina (o reasignar si aplica)
                     if not df.empty and cant_equipos > 0:
                         df = df[df["OFICINA"] != oficina_a_borrar]
                         guardar_datos(df)
@@ -684,62 +816,91 @@ elif opcion == "🏢 Gestión de Oficinas" and tiene_permiso("renombrar_oficinas
                     st.success(f"✅ Oficina **'{oficina_a_borrar}'** eliminada del sistema.")
                     st.rerun()
 
-# 7. IMPORTAR Y EXPORTAR RESPALDOS
+# 8. IMPORTAR Y EXPORTAR RESPALDOS (NUEVA RESPALDO GENERAL COMPLETO)
 elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
-    st.subheader("📥 Exportar Respaldo (Excel)")
+    st.subheader("💾 Gestión de Respaldos e Importación")
     
-    if es_master or tiene_permiso("ver_todas_oficinas"):
-        df_exportar = df.copy()
-        st.info("🌐 Tienes permisos para exportar el inventario de **todas las oficinas**.")
-    else:
-        df_exportar = df[df["OFICINA"].astype(str) == st.session_state["oficina"]]
-        st.info(f"🔒 Exportarás únicamente los equipos asignados a tu oficina: **{st.session_state['oficina']}**")
+    t_resp_inv, t_resp_gen, t_imp = st.tabs([
+        "📄 Respaldo de Inventario (Excel)", 
+        "🌐 RESPALDO GENERAL DEL SISTEMA", 
+        "📤 Importar Inventario (Excel)"
+    ])
 
-    if not df_exportar.empty:
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df_exportar.to_excel(writer, index=False, sheet_name='Inventario')
-        st.download_button(
-            label="📥 Descargar Excel de Inventario",
-            data=buffer.getvalue(),
-            file_name=f"Inventario_{st.session_state['oficina']}_Respaldo.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.warning("No hay datos para exportar.")
+    with t_resp_inv:
+        if es_master or tiene_permiso("ver_todas_oficinas"):
+            df_exportar = df.copy()
+            st.info("🌐 Exportando el inventario de **todas las oficinas**.")
+        else:
+            df_exportar = df[df["OFICINA"].astype(str) == st.session_state["oficina"]]
+            st.info(f"🔒 Exportarás únicamente los equipos asignados a tu oficina: **{st.session_state['oficina']}**")
 
-    st.divider()
-    st.subheader("📤 Importar Respaldo (Excel)")
-    
-    if not (es_master or tiene_permiso("ver_todas_oficinas")):
-        st.warning(f"🔒 **Atención:** Todos los equipos que importes se asignarán de forma **estricta y automática** a tu oficina (**{st.session_state['oficina']}**). No podrás ingresar registros para otras sedes.")
+        if not df_exportar.empty:
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_exportar.to_excel(writer, index=False, sheet_name='Inventario')
+            st.download_button(
+                label="📥 Descargar Excel de Inventario",
+                data=buffer.getvalue(),
+                file_name=f"Inventario_{st.session_state['oficina']}_Respaldo.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.warning("No hay datos para exportar.")
 
-    up_file = st.file_uploader("Cargar Excel", type=["xlsx", "xls"])
-    if up_file and st.button("Procesar e Importar"):
-        try:
-            df_n = pd.read_excel(up_file, dtype=str).fillna("")
-            
-            for c in COLUMNAS:
-                if c not in df_n.columns:
-                    df_n[c] = ""
-            
-            df_n = df_n[COLUMNAS]
-
-            if not (es_master or tiene_permiso("ver_todas_oficinas")):
-                df_n["OFICINA"] = st.session_state["oficina"]
+    with t_resp_gen:
+        st.markdown("### 🌐 Respaldo General del Sistema Completo")
+        st.write("Genera una copia de seguridad integral que incluye **Inventario Total**, **Usuarios**, **Oficinas** y **Configuración de Permisos**.")
+        
+        if st.button("📦 Generar Respaldo General Completo"):
+            buf_gen = io.BytesIO()
+            with pd.ExcelWriter(buf_gen, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name="Inventario_Total")
                 
-                df_resto = df[df["OFICINA"].astype(str) != st.session_state["oficina"]]
-                df_final = pd.concat([df_resto, df_n], ignore_index=True)
-            else:
-                df_final = pd.concat([df, df_n], ignore_index=True).drop_duplicates(subset=["MV"], keep="last")
+                df_u_resp = pd.DataFrame([
+                    {"Usuario": u, "Rol": d["rol"], "Oficina": d.get("oficina", "Sin Oficina")}
+                    for u, d in cargar_usuarios().items()
+                ])
+                df_u_resp.to_excel(writer, index=False, sheet_name="Usuarios")
+                
+                pd.DataFrame({"Oficinas": cargar_oficinas_guardadas()}).to_excel(writer, index=False, sheet_name="Oficinas")
+                
+                pd.DataFrame(cargar_permisos()).to_excel(writer, sheet_name="Permisos")
+                
+            st.download_button(
+                label="📥 Descargar Respaldo General Completo (.xlsx)",
+                data=buf_gen.getvalue(),
+                file_name=f"RESPALDO_GENERAL_SISTEMA_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
-            guardar_datos(df_final)
-            st.success(f"✅ Datos importados correctamente para **{st.session_state['oficina']}**.")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error al importar: {e}")
+    with t_imp:
+        st.subheader("📤 Importar Respaldo (Excel)")
+        if not (es_master or tiene_permiso("ver_todas_oficinas")):
+            st.warning(f"🔒 Todos los equipos que importes se asignarán de forma automática a tu oficina (**{st.session_state['oficina']}**).")
 
-# 8. PANEL MASTER DE CONTROL DE PERMISOS
+        up_file = st.file_uploader("Cargar Excel", type=["xlsx", "xls"])
+        if up_file and st.button("Procesar e Importar"):
+            try:
+                df_n = pd.read_excel(up_file, dtype=str).fillna("")
+                for c in COLUMNAS:
+                    if c not in df_n.columns:
+                        df_n[c] = ""
+                df_n = df_n[COLUMNAS]
+
+                if not (es_master or tiene_permiso("ver_todas_oficinas")):
+                    df_n["OFICINA"] = st.session_state["oficina"]
+                    df_resto = df[df["OFICINA"].astype(str) != st.session_state["oficina"]]
+                    df_final = pd.concat([df_resto, df_n], ignore_index=True)
+                else:
+                    df_final = pd.concat([df, df_n], ignore_index=True).drop_duplicates(subset=["MV"], keep="last")
+
+                guardar_datos(df_final)
+                st.success(f"✅ Datos importados correctamente.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al importar: {e}")
+
+# 9. PANEL MASTER DE CONTROL DE PERMISOS
 elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
     st.subheader("⚙️ Panel de Control Master - Gestión Dinámica de Permisos")
     st.write("Configura lo que los roles **Administrador** y **Visualizador** tienen permitido realizar en todo el sistema:")
@@ -755,6 +916,7 @@ elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
             p_adm_editar = st.checkbox("Editar Equipos", value=permisos_config["Administrador"].get("editar_equipos", True))
             p_adm_eliminar = st.checkbox("Eliminar Equipos", value=permisos_config["Administrador"].get("eliminar_equipos", True))
             p_adm_traslado = st.checkbox("Trasladar Equipos entre Oficinas", value=permisos_config["Administrador"].get("trasladar_equipos", True))
+            p_adm_audit = st.checkbox("Realizar Auditorías", value=permisos_config["Administrador"].get("auditorias", True))
             p_adm_users = st.checkbox("Gestionar Usuarios", value=permisos_config["Administrador"].get("gestion_usuarios", True))
             p_adm_renombrar = st.checkbox("Renombrar / Crear / Eliminar Oficinas", value=permisos_config["Administrador"].get("renombrar_oficinas", True))
             p_adm_respaldos = st.checkbox("Exportar e Importar Respaldos", value=permisos_config["Administrador"].get("exportar_importar", True))
@@ -766,6 +928,7 @@ elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
             p_vis_editar = st.checkbox("Editar Equipos ", value=permisos_config["Visualizador"].get("editar_equipos", False))
             p_vis_eliminar = st.checkbox("Eliminar Equipos ", value=permisos_config["Visualizador"].get("eliminar_equipos", False))
             p_vis_traslado = st.checkbox("Trasladar Equipos ", value=permisos_config["Visualizador"].get("trasladar_equipos", False))
+            p_vis_audit = st.checkbox("Realizar Auditorías ", value=permisos_config["Visualizador"].get("auditorias", False))
             p_vis_users = st.checkbox("Gestionar Usuarios ", value=permisos_config["Visualizador"].get("gestion_usuarios", False))
             p_vis_renombrar = st.checkbox("Renombrar / Crear / Eliminar Oficinas ", value=permisos_config["Visualizador"].get("renombrar_oficinas", False))
             p_vis_respaldos = st.checkbox("Exportar e Importar Respaldos ", value=permisos_config["Visualizador"].get("exportar_importar", False))
@@ -778,6 +941,7 @@ elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
                     "editar_equipos": p_adm_editar,
                     "eliminar_equipos": p_adm_eliminar,
                     "trasladar_equipos": p_adm_traslado,
+                    "auditorias": p_adm_audit,
                     "gestion_usuarios": p_adm_users,
                     "renombrar_oficinas": p_adm_renombrar,
                     "exportar_importar": p_adm_respaldos,
@@ -788,6 +952,7 @@ elif opcion == "⚙️ Panel Master (Permisos del Sistema)" and es_master:
                     "editar_equipos": p_vis_editar,
                     "eliminar_equipos": p_vis_eliminar,
                     "trasladar_equipos": p_vis_traslado,
+                    "auditorias": p_vis_audit,
                     "gestion_usuarios": p_vis_users,
                     "renombrar_oficinas": p_vis_renombrar,
                     "exportar_importar": p_vis_respaldos,
