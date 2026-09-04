@@ -116,20 +116,23 @@ def validar_duplicidad_lote(df_lote, df_existente=None, index_ignore=None):
 def procesar_importacion_upsert(df_lote, df_base, oficina_sesion, es_admin_global):
     """
     Procesa la importación masiva permitiendo actualizar registros al coincidir MV o Material.
-    Omitirá cualquier registro que no contenga el campo MV obligatorio.
+    Omitirá cualquier registro que no contenga el campo MV obligatorio y capturará los errores.
     """
     df_db = df_base.copy()
     agregados = 0
     actualizados = 0
-    ignorados_sin_mv = 0
+    registros_error = []
 
-    for _, row in df_lote.iterrows():
+    for index_fila, row in df_lote.iterrows():
         mv_val = str(row.get("MV", "")).strip()
         material_val = str(row.get("Material", "")).strip()
 
-        # RESTRICCIÓN: Si no tiene MV, se ignora completamente el registro
+        # RESTRICCIÓN: Si no tiene MV, se agrega a la lista de errores con el motivo
         if not mv_val:
-            ignorados_sin_mv += 1
+            fila_error = row.to_dict()
+            fila_error["MOTIVO_ERROR"] = "Registro no cargado: El campo MV (MB) es obligatorio y se encuentra vacío."
+            fila_error["FILA_ORIGEN"] = index_fila + 2  # +2 por cabecera y base 1 de Excel
+            registros_error.append(fila_error)
             continue
 
         oficina_asignada = str(row.get("OFICINA", "")).strip() if es_admin_global else oficina_sesion
@@ -168,7 +171,9 @@ def procesar_importacion_upsert(df_lote, df_base, oficina_sesion, es_admin_globa
             df_db = pd.concat([df_db, pd.DataFrame([nueva_fila])], ignore_index=True)
             agregados += 1
 
-    return df_db, agregados, actualizados, ignorados_sin_mv
+    df_errores = pd.DataFrame(registros_error) if registros_error else pd.DataFrame()
+
+    return df_db, agregados, actualizados, df_errores
 
 # --- FUNCIONES DE PERSISTENCIA ---
 def cargar_permisos():
@@ -1032,7 +1037,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
 
     with t_imp:
         st.subheader("📤 Importar / Actualizar Inventario (Excel)")
-        st.write("Carga un archivo Excel. Si un registro coincide por **MV** o **Material**, el sistema **actualización los datos**. Si no coincide, se creará un registro nuevo.")
+        st.write("Carga un archivo Excel. Si un registro coincide por **MV** o **Material**, el sistema **actualizará los datos**. Si no coincide, se creará un registro nuevo.")
         st.info("⚠️ **Nota:** Todo registro en el archivo que **no posea MV** será omitido automáticamente.")
 
         es_admin_global = (es_master or tiene_permiso("ver_todas_oficinas"))
@@ -1049,15 +1054,13 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                 for c in COLUMNAS:
                     if c not in df_n.columns:
                         df_n[c] = ""
-                
-                df_n = df_n[COLUMNAS]
 
                 df_n = df_n[df_n.apply(lambda row: row.astype(str).str.strip().str.cat().strip() != "", axis=1)]
 
                 if df_n.empty:
                     st.warning("⚠️ El archivo subido no contiene registros válidos.")
                 else:
-                    df_final, cant_agregados, cant_actualizados, cant_ignorados = procesar_importacion_upsert(
+                    df_final, cant_agregados, cant_actualizados, df_errores = procesar_importacion_upsert(
                         df_lote=df_n,
                         df_base=df,
                         oficina_sesion=st.session_state["oficina"],
@@ -1066,16 +1069,44 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
 
                     guardar_datos(df_final)
                     
-                    st.success(
-                        f"✅ **Proceso completado:**\n\n"
-                        f"- 🔄 **Equipos actualizados:** {cant_actualizados}\n"
-                        f"- ➕ **Equipos nuevos agregados:** {cant_agregados}\n"
-                        f"- ⚠️ **Registros omitidos (por carecer de MV):** {cant_ignorados}"
-                    )
+                    st.session_state["ultimo_resultado_importacion"] = {
+                        "agregados": cant_agregados,
+                        "actualizados": cant_actualizados,
+                        "df_errores": df_errores
+                    }
                     st.rerun()
 
             except Exception as e:
                 st.error(f"❌ Error al procesar el archivo: {e}")
+
+        # Mostrar resultados de la importación y opción de descarga de errores
+        if "ultimo_resultado_importacion" in st.session_state:
+            res = st.session_state["ultimo_resultado_importacion"]
+            df_err = res["df_errores"]
+            cant_err = len(df_err)
+
+            st.markdown("---")
+            st.success(
+                f"✅ **Proceso completado:**\n\n"
+                f"- 🔄 **Equipos actualizados:** {res['actualizados']}\n"
+                f"- ➕ **Equipos nuevos agregados:** {res['agregados']}\n"
+                f"- ⚠️ **Registros omitidos con error:** {cant_err}"
+            )
+
+            if not df_err.empty:
+                st.warning(f"⚠️ Se encontraron **{cant_err}** registro(s) que fallaron al procesarse.")
+                
+                output_err = io.BytesIO()
+                with pd.ExcelWriter(output_err, engine='openpyxl') as writer:
+                    df_err.to_excel(writer, index=False, sheet_name="Registros_Con_Error")
+
+                st.download_button(
+                    label="📥 Descargar Archivo con Registros no Cargados (Excel)",
+                    data=output_err.getvalue(),
+                    file_name=f"Errores_Importacion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
 
     with t_rest_gen:
         st.markdown("### 🔄 Restauración General del Sistema")
