@@ -77,47 +77,48 @@ PERMISOS_DEFAULT = {
     }
 }
 
-# --- FUNCIONES DE VALIDACIÓN DE DUPLICIDAD EN MV Y MATERIAL ---
+# --- FUNCIONES DE VALIDACIÓN DE DUPLICIDAD COMBINADA (MV + MATERIAL) ---
 def validar_duplicidad_lote(df_lote, df_existente=None, index_ignore=None):
     """
-    Valida duplicados de MV y Material con la regla de 'Todo o Nada'.
+    Valida la duplicidad combinada de (MV + Material) con la regla de 'Todo o Nada'.
+    - Si MV coincide pero Material no -> PERMITIDO.
+    - Si Material coincide pero MV no -> PERMITIDO.
+    - Si AMBOS (MV Y Material) coinciden en el mismo registro -> BLOQUEADO.
     Retorna (es_valido, mensaje_error).
     """
-    mvs_vistos = set()
-    materiales_vistos = set()
+    parejas_vistas = set()
 
-    # 1. Validar duplicación interna en el lote
+    # 1. Validar duplicación combinada interna dentro del mismo lote
     for idx, row in df_lote.iterrows():
         mv = str(row.get("MV", "")).strip()
         material = str(row.get("Material", "")).strip()
 
-        if mv:
-            if mv in mvs_vistos:
-                return False, f"Error en el lote: El MV '{mv}' está duplicado varias veces dentro del mismo archivo/formulario."
-            mvs_vistos.add(mv)
+        # Solo evaluamos duplicado combinado si ambos campos tienen información
+        if mv and material:
+            pareja = (mv, material)
+            if pareja in parejas_vistas:
+                return False, f"Error en el lote: La combinación de MV '{mv}' y Material '{material}' está repetida múltiples veces en el archivo/formulario."
+            parejas_vistas.add(pareja)
 
-        if material:
-            if material in materiales_vistos:
-                return False, f"Error en el lote: El Material '{material}' está duplicado varias veces dentro del mismo archivo/formulario."
-            materiales_vistos.add(material)
-
-    # 2. Validar duplicación contra la base de datos existente
+    # 2. Validar duplicación combinada contra la base de datos existente
     if df_existente is not None and not df_existente.empty:
         df_db = df_existente.copy()
         if index_ignore is not None:
             df_db = df_db.drop(index=index_ignore)
 
-        db_mvs = set(df_db["MV"].astype(str).str.strip().tolist()) - {""}
-        db_mats = set(df_db["Material"].astype(str).str.strip().tolist()) - {""}
+        # Crear conjunto de parejas (MV, Material) existentes en la Base de Datos
+        df_db_filtrado = df_db[(df_db["MV"].astype(str).str.strip() != "") & (df_db["Material"].astype(str).str.strip() != "")]
+        parejas_db = set(zip(
+            df_db_filtrado["MV"].astype(str).str.strip(),
+            df_db_filtrado["Material"].astype(str).str.strip()
+        ))
 
-        colision_mvs = mvs_vistos.intersection(db_mvs)
-        colision_mats = materiales_vistos.intersection(db_mats)
+        # Detectar colisiones donde coincidan AMBOS datos simultáneamente
+        colisiones = parejas_vistas.intersection(parejas_db)
 
-        if colision_mvs or colision_mats:
-            msj_mvs = f"MV(s) duplicado(s): {', '.join(colision_mvs)}" if colision_mvs else ""
-            msj_mats = f"Material(es) duplicado(s): {', '.join(colision_mats)}" if colision_mats else ""
-            detalles = " | ".join(filter(None, [msj_mvs, msj_mats]))
-            return False, f"Carga abortada por duplicidad en el sistema: {detalles}. No se guardó ningún registro."
+        if colisiones:
+            detalles = ", ".join([f"[MV: '{m}', Material: '{mat}']" for m, mat in colisiones])
+            return False, f"Carga abortada: Ya existe en el sistema un registro con la combinación exacta de {detalles}. No se guardó ningún registro."
 
     return True, ""
 
@@ -386,7 +387,7 @@ if opcion == "📋 Consultar Inventario":
                         if st.button("💾 Guardar Cambios"):
                             df_edit_temp = pd.DataFrame([{"MV": mv_e, "Material": mat_e}])
                             
-                            # Validar que al editar no entre en conflicto con otro registro existente
+                            # Validar que al editar no entre en conflicto combinado con otro registro existente
                             es_valido, msj_err = validar_duplicidad_lote(df_edit_temp, df_existente=df, index_ignore=reg_idx)
                             
                             if not es_valido:
@@ -457,7 +458,7 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
             "OBSERVACIONES": str(observaciones)
         }
         
-        # Validar duplicación estricta de MV y Material
+        # Validar duplicidad únicamente si MV y Material coinciden ambos simultáneamente
         df_nuevo_temp = pd.DataFrame([nuevo_dict])
         es_valido, msj_err = validar_duplicidad_lote(df_nuevo_temp, df_existente=df)
 
@@ -979,7 +980,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
 
     with t_imp:
         st.subheader("📤 Importar Inventario (Excel)")
-        st.write("Carga un archivo Excel. Si se detecta **un solo duplicado en MB o Material**, **ningún equipo del lote será cargado**.")
+        st.write("Carga un archivo Excel. Se permite la repetición de **MV** o **Material** por separado, pero **si coinciden ambos campos en un mismo equipo**, la carga completa será abortada.")
         
         if not (es_master or tiene_permiso("ver_todas_oficinas")):
             st.warning(f"🔒 Todos los registros que importes se asignarán de forma automática a tu oficina (**{st.session_state['oficina']}**).")
@@ -1001,7 +1002,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                 if not (es_master or tiene_permiso("ver_todas_oficinas")):
                     df_n["OFICINA"] = st.session_state["oficina"]
 
-                # Validación de Duplicidad estricta para MB y Material (Todo o Nada)
+                # Validación de duplicidad combinada estricta para (MV + Material) -> Todo o Nada
                 es_valido, msj_err = validar_duplicidad_lote(df_n, df_existente=df)
 
                 if not es_valido:
@@ -1039,7 +1040,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                                 df_rest[c] = ""
                         df_rest = df_rest[COLUMNAS]
 
-                        # Validar duplicados dentro de la hoja de restauración
+                        # Validar duplicados combinados en el lote de restauración
                         es_valido, msj_err = validar_duplicidad_lote(df_rest)
                         if not es_valido:
                             st.error(f"❌ La restauración se abortó: El archivo de respaldo contiene inconsistencias. {msj_err}")
