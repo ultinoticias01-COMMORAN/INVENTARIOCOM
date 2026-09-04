@@ -115,8 +115,8 @@ def validar_duplicidad_lote(df_lote, df_existente=None, index_ignore=None):
 
 def procesar_importacion_upsert(df_lote, df_base, oficina_sesion, es_admin_global):
     """
-    Procesa la importación masiva permitiendo actualizar registros al coincidir MV o Material.
-    Omitirá cualquier registro que no contenga el campo MV obligatorio y capturará los errores.
+    Procesa la importación masiva permitiendo actualizar registros ÚNICAMENTE cuando coincide el campo MV.
+    Omitirá cualquier registro que no contenga el campo MV obligatorio.
     """
     df_db = df_base.copy()
     agregados = 0
@@ -125,12 +125,11 @@ def procesar_importacion_upsert(df_lote, df_base, oficina_sesion, es_admin_globa
 
     for index_fila, row in df_lote.iterrows():
         mv_val = str(row.get("MV", "")).strip()
-        material_val = str(row.get("Material", "")).strip()
 
         # RESTRICCIÓN: Si no tiene MV, se agrega a la lista de errores con el motivo
         if not mv_val:
             fila_error = row.to_dict()
-            fila_error["MOTIVO_ERROR"] = "Registro no cargado: El campo MV (MB) es obligatorio y se encuentra vacío."
+            fila_error["MOTIVO_ERROR"] = "Registro no cargado: El campo MV es obligatorio y se encuentra vacío."
             fila_error["FILA_ORIGEN"] = index_fila + 2  # +2 por cabecera y base 1 de Excel
             registros_error.append(fila_error)
             continue
@@ -139,21 +138,13 @@ def procesar_importacion_upsert(df_lote, df_base, oficina_sesion, es_admin_globa
         if not oficina_asignada:
             oficina_asignada = oficina_sesion
 
-        coincidencia_idx = None
-        
-        mask = pd.Series([False] * len(df_db), index=df_db.index)
-        
-        if mv_val:
-            mask = mask | (df_db["MV"].astype(str).str.strip() == mv_val)
-        if material_val:
-            mask = mask | (df_db["Material"].astype(str).str.strip() == material_val)
-
+        # COINCIDENCIA ESTRICTA SOLO POR MV
+        mask = (df_db["MV"].astype(str).str.strip() == mv_val)
         indices = df_db[mask].index
+
         if not indices.empty:
             coincidencia_idx = indices[0]
-
-        if coincidencia_idx is not None:
-            # Actualizar registro existente
+            # Actualizar registro existente que coincide por MV
             for col in COLUMNAS:
                 if col == "OFICINA" and not es_admin_global:
                     continue
@@ -389,7 +380,6 @@ if opcion == "📋 Consultar Inventario":
     else:
         busqueda = st.text_input("🔍 Buscar por MV, Material, Ubicación, Objeto técnico, etc.:").strip()
         if busqueda:
-            # CORRECCIÓN APLICADA AQUÍ (.str.contains con na=False)
             mascara = df_view.apply(lambda row: row.astype(str).str.contains(busqueda, case=False, na=False).any(), axis=1)
             df_mostrar = df_view[mascara]
             cant_hallados = len(df_mostrar)
@@ -502,7 +492,7 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
     
     if boton_guardar:
         if not mv:
-            st.error("⚠️ **Acción denegada:** El campo **MV** es strictly OBLIGATORIO para crear un equipo.")
+            st.error("⚠️ **Acción denegada:** El campo **MV** es estrictamente OBLIGATORIO para crear un equipo.")
         else:
             nuevo_dict = {
                 "MV": str(mv),
@@ -1038,7 +1028,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
 
     with t_imp:
         st.subheader("📤 Importar / Actualizar Inventario (Excel)")
-        st.write("Carga un archivo Excel. Si un registro coincide por **MV** o **Material**, el sistema **actualizará los datos**. Si no coincide, se creará un registro nuevo.")
+        st.write("Carga un archivo Excel. Si un registro coincide únicamente por el campo **MV**, el sistema **actualizará los datos**. De lo contrario, creará un registro nuevo.")
         st.info("⚠️ **Nota:** Todo registro en el archivo que **no posea MV** será omitido automáticamente.")
 
         es_admin_global = (es_master or tiene_permiso("ver_todas_oficinas"))
