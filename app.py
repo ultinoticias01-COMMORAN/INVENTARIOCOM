@@ -77,6 +77,51 @@ PERMISOS_DEFAULT = {
     }
 }
 
+# --- FUNCIONES DE VALIDACIÓN DE DUPLICIDAD EN MV Y MATERIAL ---
+def validar_duplicidad_lote(df_lote, df_existente=None, index_ignore=None):
+    """
+    Valida duplicados de MV y Material con la regla de 'Todo o Nada'.
+    Retorna (es_valido, mensaje_error).
+    """
+    mvs_vistos = set()
+    materiales_vistos = set()
+
+    # 1. Validar duplicación interna en el lote
+    for idx, row in df_lote.iterrows():
+        mv = str(row.get("MV", "")).strip()
+        material = str(row.get("Material", "")).strip()
+
+        if mv:
+            if mv in mvs_vistos:
+                return False, f"Error en el lote: El MV '{mv}' está duplicado varias veces dentro del mismo archivo/formulario."
+            mvs_vistos.add(mv)
+
+        if material:
+            if material in materiales_vistos:
+                return False, f"Error en el lote: El Material '{material}' está duplicado varias veces dentro del mismo archivo/formulario."
+            materiales_vistos.add(material)
+
+    # 2. Validar duplicación contra la base de datos existente
+    if df_existente is not None and not df_existente.empty:
+        df_db = df_existente.copy()
+        if index_ignore is not None:
+            df_db = df_db.drop(index=index_ignore)
+
+        db_mvs = set(df_db["MV"].astype(str).str.strip().tolist()) - {""}
+        db_mats = set(df_db["Material"].astype(str).str.strip().tolist()) - {""}
+
+        colision_mvs = mvs_vistos.intersection(db_mvs)
+        colision_mats = materiales_vistos.intersection(db_mats)
+
+        if colision_mvs or colision_mats:
+            msj_mvs = f"MV(s) duplicado(s): {', '.join(colision_mvs)}" if colision_mvs else ""
+            msj_mats = f"Material(es) duplicado(s): {', '.join(colision_mats)}" if colision_mats else ""
+            detalles = " | ".join(filter(None, [msj_mvs, msj_mats]))
+            return False, f"Carga abortada por duplicidad en el sistema: {detalles}. No se guardó ningún registro."
+
+    return True, ""
+
+# --- FUNCIONES DE PERSISTENCIA ---
 def cargar_permisos():
     if os.path.exists(ARCHIVO_PERMISOS):
         try:
@@ -327,8 +372,8 @@ if opcion == "📋 Consultar Inventario":
                     with tabs[0]:
                         c1, c2 = st.columns(2)
                         with c1:
-                            mv_e = st.text_input("MV", value=str(registro["MV"]), key="edit_mv")
-                            mat_e = st.text_input("Material", value=str(registro["Material"]), key="edit_mat")
+                            mv_e = st.text_input("MV", value=str(registro["MV"]), key="edit_mv").strip()
+                            mat_e = st.text_input("Material", value=str(registro["Material"]), key="edit_mat").strip()
                             den_obj_e = st.text_input("Denominación Objeto Técnico", value=str(registro["Denominación de objeto técnico"]), key="edit_den_obj")
                             stat_s_e = st.text_input("Stat.sist.", value=str(registro["Stat.sist."]), key="edit_stat_s")
                             stat_u_e = st.text_input("StatUsu", value=str(registro["StatUsu"]), key="edit_stat_u")
@@ -339,18 +384,26 @@ if opcion == "📋 Consultar Inventario":
                             obs_e = st.text_area("OBSERVACIONES", value=str(registro["OBSERVACIONES"]), key="edit_obs")
                             
                         if st.button("💾 Guardar Cambios"):
-                            df.loc[reg_idx, "MV"] = str(mv_e)
-                            df.loc[reg_idx, "Material"] = str(mat_e)
-                            df.loc[reg_idx, "Denominación de objeto técnico"] = str(den_obj_e)
-                            df.loc[reg_idx, "Stat.sist."] = str(stat_s_e)
-                            df.loc[reg_idx, "StatUsu"] = str(stat_u_e)
-                            df.loc[reg_idx, "ESTATUS ACTUAL."] = str(est_e)
-                            df.loc[reg_idx, "Denomin."] = str(den_e)
-                            df.loc[reg_idx, "UBICACIÓN ACTUAL"] = str(ubi_e)
-                            df.loc[reg_idx, "OBSERVACIONES"] = str(obs_e)
-                            guardar_datos(df)
-                            st.success("✅ Equipo actualizado correctamente.")
-                            st.rerun()
+                            df_edit_temp = pd.DataFrame([{"MV": mv_e, "Material": mat_e}])
+                            
+                            # Validar que al editar no entre en conflicto con otro registro existente
+                            es_valido, msj_err = validar_duplicidad_lote(df_edit_temp, df_existente=df, index_ignore=reg_idx)
+                            
+                            if not es_valido:
+                                st.error(f"⚠️ {msj_err}")
+                            else:
+                                df.loc[reg_idx, "MV"] = str(mv_e)
+                                df.loc[reg_idx, "Material"] = str(mat_e)
+                                df.loc[reg_idx, "Denominación de objeto técnico"] = str(den_obj_e)
+                                df.loc[reg_idx, "Stat.sist."] = str(stat_s_e)
+                                df.loc[reg_idx, "StatUsu"] = str(stat_u_e)
+                                df.loc[reg_idx, "ESTATUS ACTUAL."] = str(est_e)
+                                df.loc[reg_idx, "Denomin."] = str(den_e)
+                                df.loc[reg_idx, "UBICACIÓN ACTUAL"] = str(ubi_e)
+                                df.loc[reg_idx, "OBSERVACIONES"] = str(obs_e)
+                                guardar_datos(df)
+                                st.success("✅ Equipo actualizado correctamente.")
+                                st.rerun()
 
                 if tiene_permiso("eliminar_equipos"):
                     idx_tab_del = 1 if tiene_permiso("editar_equipos") else 0
@@ -404,15 +457,12 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
             "OBSERVACIONES": str(observaciones)
         }
         
-        # Comprobar duplicidad exacta considerando todas las columnas
-        if not df.empty:
-            coincidencias = (df[COLUMNAS] == pd.Series(nuevo_dict)[COLUMNAS]).all(axis=1)
-            es_duplicado_exacto = coincidencias.any()
-        else:
-            es_duplicado_exacto = False
+        # Validar duplicación estricta de MV y Material
+        df_nuevo_temp = pd.DataFrame([nuevo_dict])
+        es_valido, msj_err = validar_duplicidad_lote(df_nuevo_temp, df_existente=df)
 
-        if es_duplicado_exacto:
-            st.error("⚠️ Error: Ya existe un registro exactamente idéntico en todas sus casillas dentro del sistema.")
+        if not es_valido:
+            st.error(f"⚠️ {msj_err}")
         else:
             nuevo_reg = pd.DataFrame([nuevo_dict])
             df = pd.concat([df, nuevo_reg], ignore_index=True)
@@ -929,7 +979,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
 
     with t_imp:
         st.subheader("📤 Importar Inventario (Excel)")
-        st.write("Carga un archivo Excel. Se importarán las filas respetando si tienen datos en otras casillas. **Los registros idénticos exactos serán ignorados** para evitar duplicados.")
+        st.write("Carga un archivo Excel. Si se detecta **un solo duplicado en MB o Material**, **ningún equipo del lote será cargado**.")
         
         if not (es_master or tiene_permiso("ver_todas_oficinas")):
             st.warning(f"🔒 Todos los registros que importes se asignarán de forma automática a tu oficina (**{st.session_state['oficina']}**).")
@@ -950,26 +1000,18 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
 
                 if not (es_master or tiene_permiso("ver_todas_oficinas")):
                     df_n["OFICINA"] = st.session_state["oficina"]
-                    df_base = df.copy()
+
+                # Validación de Duplicidad estricta para MB y Material (Todo o Nada)
+                es_valido, msj_err = validar_duplicidad_lote(df_n, df_existente=df)
+
+                if not es_valido:
+                    st.error(f"❌ {msj_err}")
                 else:
-                    df_base = df.copy()
+                    df_final = pd.concat([df, df_n], ignore_index=True)
+                    guardar_datos(df_final)
+                    st.success(f"✅ Importación exitosa: Se agregaron **{len(df_n)} registro(s)** al inventario.")
+                    st.rerun()
 
-                # Combinar eliminando duplicados idénticos en todas las columnas
-                df_total = pd.concat([df_base, df_n], ignore_index=True)
-                cant_antes = len(df_total)
-                
-                # Eliminar filas donde absolutamente todas las casillas sean idénticas
-                df_final = df_total.drop_duplicates(subset=COLUMNAS, keep="first").reset_index(drop=True)
-                cant_despues = len(df_final)
-                
-                registros_nuevos = cant_despues - len(df_base)
-                duplicados_omitidos = len(df_n) - registros_nuevos
-
-                guardar_datos(df_final)
-                st.success(f"✅ Proceso completado: Se importaron **{registros_nuevos} nuevo(s) registro(s)**.")
-                if duplicados_omitidos > 0:
-                    st.info(f"ℹ️ Se omitieron **{duplicados_omitidos} registro(s) duplicados exactos** que ya existían en el sistema.")
-                st.rerun()
             except Exception as e:
                 st.error(f"Error al importar archivo: {e}")
 
@@ -995,7 +1037,15 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                         for c in COLUMNAS:
                             if c not in df_rest.columns:
                                 df_rest[c] = ""
-                        guardar_datos(df_rest[COLUMNAS])
+                        df_rest = df_rest[COLUMNAS]
+
+                        # Validar duplicados dentro de la hoja de restauración
+                        es_valido, msj_err = validar_duplicidad_lote(df_rest)
+                        if not es_valido:
+                            st.error(f"❌ La restauración se abortó: El archivo de respaldo contiene inconsistencias. {msj_err}")
+                            st.stop()
+                        else:
+                            guardar_datos(df_rest)
                     
                     if "Usuarios" in hojas:
                         df_u_rest = pd.read_excel(xls, sheet_name="Usuarios", dtype=str).fillna("")
