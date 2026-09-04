@@ -389,7 +389,8 @@ if opcion == "📋 Consultar Inventario":
     else:
         busqueda = st.text_input("🔍 Buscar por MV, Material, Ubicación, Objeto técnico, etc.:").strip()
         if busqueda:
-            mascara = df_view.apply(lambda row: row.astype(str).contains(busqueda, case=False).any(), axis=1)
+            # CORRECCIÓN APLICADA AQUÍ (.str.contains con na=False)
+            mascara = df_view.apply(lambda row: row.astype(str).str.contains(busqueda, case=False, na=False).any(), axis=1)
             df_mostrar = df_view[mascara]
             cant_hallados = len(df_mostrar)
             if cant_hallados == 0:
@@ -501,7 +502,7 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
     
     if boton_guardar:
         if not mv:
-            st.error("⚠️ **Acción denegada:** El campo **MV** es estrictamente OBLIGATORIO para crear un equipo.")
+            st.error("⚠️ **Acción denegada:** El campo **MV** es strictly OBLIGATORIO para crear un equipo.")
         else:
             nuevo_dict = {
                 "MV": str(mv),
