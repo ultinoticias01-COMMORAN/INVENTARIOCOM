@@ -77,50 +77,92 @@ PERMISOS_DEFAULT = {
     }
 }
 
-# --- FUNCIONES DE VALIDACIÓN DE DUPLICIDAD COMBINADA (MV + MATERIAL) ---
+# --- FUNCIONES DE VALIDACIÓN Y UPSERT ---
 def validar_duplicidad_lote(df_lote, df_existente=None, index_ignore=None):
     """
-    Valida la duplicidad combinada de (MV + Material) con la regla de 'Todo o Nada'.
-    - Si MV coincide pero Material no -> PERMITIDO.
-    - Si Material coincide pero MV no -> PERMITIDO.
-    - Si AMBOS (MV Y Material) coinciden en el mismo registro -> BLOQUEADO.
-    Retorna (es_valido, mensaje_error).
+    Valida duplicidad estricta para la creación/edición manual de equipos individualmente.
     """
     parejas_vistas = set()
 
-    # 1. Validar duplicación combinada interna dentro del mismo lote
     for idx, row in df_lote.iterrows():
         mv = str(row.get("MV", "")).strip()
         material = str(row.get("Material", "")).strip()
 
-        # Solo evaluamos duplicado combinado si ambos campos tienen información
         if mv and material:
             pareja = (mv, material)
             if pareja in parejas_vistas:
-                return False, f"Error en el lote: La combinación de MV '{mv}' y Material '{material}' está repetida múltiples veces en el archivo/formulario."
+                return False, f"Error en el formulario: La combinación de MV '{mv}' y Material '{material}' está repetida."
             parejas_vistas.add(pareja)
 
-    # 2. Validar duplicación combinada contra la base de datos existente
     if df_existente is not None and not df_existente.empty:
         df_db = df_existente.copy()
         if index_ignore is not None:
             df_db = df_db.drop(index=index_ignore)
 
-        # Crear conjunto de parejas (MV, Material) existentes en la Base de Datos
         df_db_filtrado = df_db[(df_db["MV"].astype(str).str.strip() != "") & (df_db["Material"].astype(str).str.strip() != "")]
         parejas_db = set(zip(
             df_db_filtrado["MV"].astype(str).str.strip(),
             df_db_filtrado["Material"].astype(str).str.strip()
         ))
 
-        # Detectar colisiones donde coincidan AMBOS datos simultáneamente
         colisiones = parejas_vistas.intersection(parejas_db)
 
         if colisiones:
             detalles = ", ".join([f"[MV: '{m}', Material: '{mat}']" for m, mat in colisiones])
-            return False, f"Carga abortada: Ya existe en el sistema un registro con la combinación exacta de {detalles}. No se guardó ningún registro."
+            return False, f"Acción abortada: Ya existe en el sistema un registro con la combinación exacta de {detalles}."
 
     return True, ""
+
+def procesar_importacion_upsert(df_lote, df_base, oficina_sesion, es_admin_global):
+    """
+    Procesa la importación masiva permitiendo actualizar registros al coincidir MV o Material.
+    """
+    df_db = df_base.copy()
+    agregados = 0
+    actualizados = 0
+
+    for _, row in df_lote.iterrows():
+        mv_val = str(row.get("MV", "")).strip()
+        material_val = str(row.get("Material", "")).strip()
+
+        oficina_asignada = str(row.get("OFICINA", "")).strip() if es_admin_global else oficina_sesion
+        if not oficina_asignada:
+            oficina_asignada = oficina_sesion
+
+        coincidencia_idx = None
+        
+        if mv_val or material_val:
+            mask = pd.Series([False] * len(df_db), index=df_db.index)
+            
+            if mv_val:
+                mask = mask | (df_db["MV"].astype(str).str.strip() == mv_val)
+            if material_val:
+                mask = mask | (df_db["Material"].astype(str).str.strip() == material_val)
+
+            indices = df_db[mask].index
+            if not indices.empty:
+                coincidencia_idx = indices[0]
+
+        if coincidencia_idx is not None:
+            # Actualizar registro existente
+            for col in COLUMNAS:
+                if col == "OFICINA" and not es_admin_global:
+                    continue
+                
+                nuevo_val = str(row.get(col, "")).strip()
+                if nuevo_val != "":
+                    df_db.loc[coincidencia_idx, col] = nuevo_val
+            
+            actualizados += 1
+
+        else:
+            # Crear nuevo registro
+            nueva_fila = {col: str(row.get(col, "")).strip() for col in COLUMNAS}
+            nueva_fila["OFICINA"] = oficina_asignada
+            df_db = pd.concat([df_db, pd.DataFrame([nueva_fila])], ignore_index=True)
+            agregados += 1
+
+    return df_db, agregados, actualizados
 
 # --- FUNCIONES DE PERSISTENCIA ---
 def cargar_permisos():
@@ -387,7 +429,6 @@ if opcion == "📋 Consultar Inventario":
                         if st.button("💾 Guardar Cambios"):
                             df_edit_temp = pd.DataFrame([{"MV": mv_e, "Material": mat_e}])
                             
-                            # Validar que al editar no entre en conflicto combinado con otro registro existente
                             es_valido, msj_err = validar_duplicidad_lote(df_edit_temp, df_existente=df, index_ignore=reg_idx)
                             
                             if not es_valido:
@@ -458,7 +499,6 @@ elif opcion == "➕ Registrar Nuevo Equipo" and tiene_permiso("crear_equipos"):
             "OBSERVACIONES": str(observaciones)
         }
         
-        # Validar duplicidad únicamente si MV y Material coinciden ambos simultáneamente
         df_nuevo_temp = pd.DataFrame([nuevo_dict])
         es_valido, msj_err = validar_duplicidad_lote(df_nuevo_temp, df_existente=df)
 
@@ -921,7 +961,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
     t_resp_inv, t_resp_gen, t_imp, t_rest_gen = st.tabs([
         "📄 Respaldo de Inventario (Excel)", 
         "🌐 RESPALDO GENERAL DEL SISTEMA", 
-        "📤 Importar Inventario",
+        "📤 Importar / Actualizar Inventario",
         "🔄 RESTAURACIÓN GENERAL DEL SISTEMA"
     ])
 
@@ -979,14 +1019,17 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
             )
 
     with t_imp:
-        st.subheader("📤 Importar Inventario (Excel)")
-        st.write("Carga un archivo Excel. Se permite la repetición de **MV** o **Material** por separado, pero **si coinciden ambos campos en un mismo equipo**, la carga completa será abortada.")
+        st.subheader("📤 Importar / Actualizar Inventario (Excel)")
+        st.write("Carga un archivo Excel. Si un registro coincide por **MV** o **Material**, el sistema **actualizará los datos restantes** del equipo. Si no coincide, se creará un registro nuevo.")
         
-        if not (es_master or tiene_permiso("ver_todas_oficinas")):
-            st.warning(f"🔒 Todos los registros que importes se asignarán de forma automática a tu oficina (**{st.session_state['oficina']}**).")
+        es_admin_global = (es_master or tiene_permiso("ver_todas_oficinas"))
+        
+        if not es_admin_global:
+            st.warning(f"🔒 Los nuevos equipos importados se asignarán automáticamente a tu oficina (**{st.session_state['oficina']}**).")
 
         up_file = st.file_uploader("Cargar Excel de Inventario", type=["xlsx", "xls"], key="up_inv_only")
-        if up_file and st.button("Procesar e Importar Inventario"):
+        
+        if up_file and st.button("Procesar e Importar / Actualizar Inventario"):
             try:
                 df_n = pd.read_excel(up_file, dtype=str).fillna("")
                 
@@ -996,25 +1039,29 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                 
                 df_n = df_n[COLUMNAS]
 
-                # Filtrar filas verdaderamente vacías en todas sus celdas
                 df_n = df_n[df_n.apply(lambda row: row.astype(str).str.strip().str.cat().strip() != "", axis=1)]
 
-                if not (es_master or tiene_permiso("ver_todas_oficinas")):
-                    df_n["OFICINA"] = st.session_state["oficina"]
-
-                # Validación de duplicidad combinada estricta para (MV + Material) -> Todo o Nada
-                es_valido, msj_err = validar_duplicidad_lote(df_n, df_existente=df)
-
-                if not es_valido:
-                    st.error(f"❌ {msj_err}")
+                if df_n.empty:
+                    st.warning("⚠️ El archivo subido no contiene registros válidos.")
                 else:
-                    df_final = pd.concat([df, df_n], ignore_index=True)
+                    df_final, cant_agregados, cant_actualizados = procesar_importacion_upsert(
+                        df_lote=df_n,
+                        df_base=df,
+                        oficina_sesion=st.session_state["oficina"],
+                        es_admin_global=es_admin_global
+                    )
+
                     guardar_datos(df_final)
-                    st.success(f"✅ Importación exitosa: Se agregaron **{len(df_n)} registro(s)** al inventario.")
+                    
+                    st.success(
+                        f"✅ **Proceso completado con éxito:**\n\n"
+                        f"- 🔄 **Equipos actualizados:** {cant_actualizados}\n"
+                        f"- ➕ **Equipos nuevos agregados:** {cant_agregados}"
+                    )
                     st.rerun()
 
             except Exception as e:
-                st.error(f"Error al importar archivo: {e}")
+                st.error(f"❌ Error al procesar el archivo: {e}")
 
     with t_rest_gen:
         st.markdown("### 🔄 Restauración General del Sistema")
@@ -1040,13 +1087,7 @@ elif opcion == "💾 Respaldos (Excel)" and tiene_permiso("exportar_importar"):
                                 df_rest[c] = ""
                         df_rest = df_rest[COLUMNAS]
 
-                        # Validar duplicados combinados en el lote de restauración
-                        es_valido, msj_err = validar_duplicidad_lote(df_rest)
-                        if not es_valido:
-                            st.error(f"❌ La restauración se abortó: El archivo de respaldo contiene inconsistencias. {msj_err}")
-                            st.stop()
-                        else:
-                            guardar_datos(df_rest)
+                        guardar_datos(df_rest)
                     
                     if "Usuarios" in hojas:
                         df_u_rest = pd.read_excel(xls, sheet_name="Usuarios", dtype=str).fillna("")
